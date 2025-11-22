@@ -1,0 +1,28 @@
+{
+  "id": "net.thunderstone.motionmount",
+  "version": "1.0.0",
+  "compatibility": ">=5.0.0",
+  "sdk": 3,
+  "platforms": [
+    "local"
+  ],
+  "name": {
+    "en": "Vogel's"
+  },
+  "description": {
+    "en": "Control Vogel's MotionMount"
+  },
+  "category": [
+    "appliances"
+  ],
+  "permissions": ["homey:wireless:ble"],
+  "images": {
+    "small": "/assets/images/small.png",
+    "large": "/assets/images/large.png",
+    "xlarge": "/assets/images/xlarge.png"
+  },
+  "author": {
+    "name": "Hans Schotanus",
+    "email": "joker-heckles.02@icloud.com"
+  }
+}

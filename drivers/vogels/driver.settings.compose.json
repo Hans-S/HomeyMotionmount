@@ -1,0 +1,16 @@
+[
+  {
+    "id": "polling",
+    "type": "checkbox",
+    "value": false,
+    "label": "Polling"
+  },
+  {
+    "id": "polling_interval",
+    "type": "number",
+    "label": "Polling interval",
+    "value": 15,
+    "min": 5,
+    "units": "minutes"
+  }
+]

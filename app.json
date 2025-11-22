@@ -1,0 +1,152 @@
+{
+  "_comment": "This file is generated. Please edit .homeycompose/app.json instead.",
+  "id": "net.thunderstone.motionmount",
+  "version": "1.0.0",
+  "compatibility": ">=5.0.0",
+  "sdk": 3,
+  "platforms": [
+    "local"
+  ],
+  "name": {
+    "en": "Vogel's"
+  },
+  "description": {
+    "en": "Control Vogel's MotionMount"
+  },
+  "category": [
+    "appliances"
+  ],
+  "permissions": [
+    "homey:wireless:ble"
+  ],
+  "images": {
+    "small": "/assets/images/small.png",
+    "large": "/assets/images/large.png",
+    "xlarge": "/assets/images/xlarge.png"
+  },
+  "author": {
+    "name": "Hans Schotanus",
+    "email": "joker-heckles.02@icloud.com"
+  },
+  "flow": {
+    "actions": [
+      {
+        "title": "Goto position",
+        "args": [
+          {
+            "name": "extend",
+            "title": "Extend position",
+            "placeholder": "0 ... 100",
+            "type": "number",
+            "min": 0,
+            "max": 100
+          },
+          {
+            "name": "turn",
+            "title": "Turn position",
+            "placeholder": "-100 ... 100",
+            "type": "number",
+            "min": -100,
+            "max": 100
+          }
+        ],
+        "id": "goto_position"
+      }
+    ]
+  },
+  "drivers": [
+    {
+      "name": {
+        "en": "MotionMount"
+      },
+      "class": "other",
+      "capabilities": [
+        "current_extend",
+        "current_turn",
+        "set_extend",
+        "set_turn"
+      ],
+      "platforms": [
+        "local"
+      ],
+      "connectivity": [
+        "ble"
+      ],
+      "images": {
+        "small": "/drivers/vogels/assets/images/small.png",
+        "large": "/drivers/vogels/assets/images/large.png",
+        "xlarge": "/drivers/vogels/assets/images/xlarge.png"
+      },
+      "pair": [
+        {
+          "id": "list_my_devices",
+          "template": "list_devices",
+          "navigation": {
+            "next": "add_my_devices"
+          }
+        },
+        {
+          "id": "add_my_devices",
+          "template": "add_devices"
+        }
+      ],
+      "id": "vogels",
+      "settings": [
+        {
+          "id": "polling",
+          "type": "checkbox",
+          "value": false,
+          "label": "Polling"
+        },
+        {
+          "id": "polling_interval",
+          "type": "number",
+          "label": "Polling interval",
+          "value": 15,
+          "min": 5,
+          "units": "minutes"
+        }
+      ]
+    }
+  ],
+  "capabilities": {
+    "current_extend": {
+      "type": "string",
+      "title": "Current extend",
+      "getable": true,
+      "setable": false,
+      "uiComponent": "sensor",
+      "icon": "/assets/icon.svg"
+    },
+    "current_turn": {
+      "type": "string",
+      "title": "Current turn",
+      "getable": true,
+      "setable": false,
+      "uiComponent": "sensor",
+      "icon": "/assets/icon.svg"
+    },
+    "set_extend": {
+      "type": "number",
+      "title": "Set extend",
+      "getable": true,
+      "setable": true,
+      "uiComponent": "slider",
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "icon": "/assets/icon.svg"
+    },
+    "set_turn": {
+      "type": "number",
+      "title": "Set turn",
+      "getable": true,
+      "setable": true,
+      "uiComponent": "slider",
+      "min": -100,
+      "max": 100,
+      "step": 1,
+      "icon": "/assets/icon.svg"
+    }
+  }
+}

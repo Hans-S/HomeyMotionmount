@@ -1,0 +1,21 @@
+{
+  "title": "Goto position",
+  "args": [
+    {
+      "name": "extend",
+      "title": "Extend position",
+      "placeholder": "0 ... 100",
+      "type": "number",
+      "min": 0,
+      "max": 100
+    },
+    {
+      "name": "turn",
+      "title": "Turn position",
+      "placeholder": "-100 ... 100",
+      "type": "number",
+      "min": -100,
+      "max": 100
+    }
+  ]
+}
