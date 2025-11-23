@@ -8,7 +8,23 @@ class MotionMountDriver extends Driver {
    * onInit is called when the driver is initialized.
    */
   async onInit() {
-    this.log('MyDriver has been initialized');
+    this.log('MotionMountDriver has been initialized');
+
+    const gotoAction = this.homey.flow.getActionCard('goto_position');
+
+    gotoAction.registerRunListener(async (args, state) => {
+      const device = args.device;
+      const extend = args.extend;
+      const turn   = args.turn;
+
+      if (!device || typeof device.onGotoPosition !== 'function') {
+        this.log('goto_position: device missing or onGotoPosition not implemented');
+        return false;
+      }
+
+      await device.onGotoPosition({ extend, turn });
+      return true;
+    });
   }
 
   /**

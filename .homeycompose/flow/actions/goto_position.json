@@ -1,18 +1,31 @@
 {
-  "title": "Goto position",
+  "id": "goto_position",
+  "title": {
+    "en": "Goto position"
+  },
+  "titleFormatted": {
+    "en": "Goto position: extend [[extend]], turn [[turn]]"
+  },
   "args": [
     {
+      "name": "device",
+      "type": "device",
+      "filter": "driver_id=vogels"
+    },
+    {
       "name": "extend",
-      "title": "Extend position",
-      "placeholder": "0 ... 100",
+      "title": {
+        "en": "Extend"
+      },
       "type": "number",
       "min": 0,
       "max": 100
     },
     {
       "name": "turn",
-      "title": "Turn position",
-      "placeholder": "-100 ... 100",
+      "title": {
+        "en": "Turn"
+      },
       "type": "number",
       "min": -100,
       "max": 100

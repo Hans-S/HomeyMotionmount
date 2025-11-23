@@ -1,13 +1,13 @@
 {
   "id": "net.thunderstone.motionmount",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "compatibility": ">=5.0.0",
   "sdk": 3,
   "platforms": [
     "local"
   ],
   "name": {
-    "en": "Vogel's"
+    "en": "Motionmounter"
   },
   "description": {
     "en": "Control Vogel's MotionMount"

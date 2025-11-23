@@ -11,5 +11,8 @@
     "@types/node": "^17.0.25",
     "eslint": "^7.32.0",
     "eslint-config-athom": "^3.0.1"
+  },
+  "dependencies": {
+    "sharp": "^0.34.5"
   }
 }
