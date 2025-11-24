@@ -4,6 +4,7 @@
   "version": "0.0.1",
   "compatibility": ">=5.0.0",
   "sdk": 3,
+  "brandColor": "#455A64",
   "platforms": [
     "local"
   ],
@@ -36,7 +37,7 @@
           "en": "Goto position"
         },
         "titleFormatted": {
-          "en": "Goto position: extend [[extend]]%, turn [[turn]]"
+          "en": "Goto position: extend [[extend]], turn [[turn]]"
         },
         "args": [
           {
