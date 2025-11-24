@@ -2,9 +2,9 @@
   "name": {
     "en": "MotionMount"
   },
-  "class": "other",
+  "class": "tv",
   "capabilities": [
-    "current_extend", "current_turn", "set_extend", "set_turn"
+    "current_extend", "current_turn", "set_extend", "set_turn", "preset"
   ],
   "platforms": [
     "local"

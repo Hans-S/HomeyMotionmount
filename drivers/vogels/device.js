@@ -10,11 +10,25 @@ class MotionMountDevice extends Device {
     this.advertisement = undefined;
     this.peripheral = undefined;
     this._busy = false;
+    this.presetCharacteristics = [];
+    this.presets = [];
+
+    // Listen to UI preset changes
+    if (this.hasCapability('preset')) {
+      this.registerCapabilityListener('preset', async (value) => {
+        return this.onCapabilityPreset(value);
+      });
+    } else {
+      this.error("No preset capability present, this should not happen")
+    }
+
     this.setUnavailable("Awaiting initial connect")
 
     try {
       await this.connect()
       await this.getPosition();
+      await this.loadPresets();
+      await this.updatePresetCapabilityOptions();
       this.setAvailable()
       this.initialize()
       this.log('MotionMountDevice has been initialized');
@@ -29,30 +43,6 @@ class MotionMountDevice extends Device {
   }
 
   async initialize() {
-    // this.gotoAction = this.homey.flow.getActionCard('goto_position');
-    // this.gotoAction.registerRunListener(async (args, state) => {
-    //   this.log('Device: Now I should go somewhere');
-    //   if (!this.advertisement) {
-    //     this.log("Device: advertisment not set. Unexpected!");
-    //   } else {
-    //     if (args.hasOwnProperty("position")) {
-    //       this.log("Need to go to position " + args.position + ". Connecting....");
-          
-    //       if (args.position == "home") {
-    //         this.extendPosition = Buffer.from([0x00, 0x16])
-    //         this.turnPosition = Buffer.from([0x00, 0x00])
-    //       } else if (args.position == "main") {
-    //         this.extendPosition = Buffer.from([0x00, 0x64])
-    //         this.turnPosition = Buffer.from([0xff, 0x9d])
-    //       }
-
-    //       await this.setPosition()
-    //     } else {
-    //       this.log("No position in argument, cannot move");
-    //     }
-    //   }
-    // });
-
     this.registerCapabilityListener("set_extend", async (value) => {
       if (value >= 0 && value <= 100) {
         this.extendPosition = Buffer.from([0x00, value])
@@ -121,6 +111,7 @@ class MotionMountDevice extends Device {
 				this.peripheral = await this.advertisement.connect();
         if (this.peripheral.isConnected) {
           this.service = await this.peripheral.getService('3e6fe65ded7811e4895e00026fd5c52c')
+
           const characteristics = await this.service.discoverCharacteristics()
           characteristics.forEach(characteristic => {
             if (characteristic.uuid == 'c005fa0006514800b000000000000000') {
@@ -129,6 +120,18 @@ class MotionMountDevice extends Device {
               this.turnPositionCharacteristic = characteristic
             } else if (characteristic.uuid == 'c005fa2106514800b000000000000000') {
               this.moveCharacteristic = characteristic
+            }
+            
+            // Store preset characteristics
+            if (characteristic.uuid.startsWith('c005fa')) {
+              const hexByte = characteristic.uuid.substring(6, 8);
+              const byteVal = parseInt(hexByte, 16);
+
+              if (byteVal >= 0x0a && byteVal <= 0x13) {
+                // Candidate preset slot, store the characteristic here
+                this.presetCharacteristics.push(characteristic);
+                this.log('Found possible preset characteristic:', characteristic.uuid);
+              }
             }
           })
   
@@ -175,6 +178,155 @@ class MotionMountDevice extends Device {
       this.log("Not disconnecting, no peripheral to disconnect")
     }
   }
+
+  async loadPresets() {
+    this.log('Loading presets from MotionMount…');
+
+    await this.connect();
+
+    const presets = [];
+
+    for (const characteristic of this.presetCharacteristics) {
+      const uuid = characteristic.uuid;
+
+      if (!this.peripheral || !this.peripheral.isConnected) {
+        this.log('loadPresets: peripheral not connected, reconnecting...');
+        await this.connect();
+      }
+
+      let buf;
+
+      try {
+        buf = await characteristic.read();
+      } catch (err) {
+        this.log('Error reading preset characteristic', uuid, err);
+        continue;
+      }
+
+      // Check if we have a valid preset. Valid presets start with 0x01
+      if (!buf || buf.length < 6 || buf[0] !== 0x01) {
+        continue;
+      }
+
+      const moveBuffer = buf.slice(1, 5);
+
+      // name from bytes [6..] until 0x00
+      let name = '';
+      for (let i = 5; i < buf.length; i++) {
+        const b = buf[i];
+        if (b === 0x00) break;
+        name += String.fromCharCode(b);
+      }
+      if (!name) {
+        name = `Preset ${presets.length}`;
+      }
+
+      presets.push({
+        name,
+        moveBuffer,
+        uuid
+      });
+    }
+
+    this.presets = presets;
+    this.log('Presets loaded:', this.presets.map(p => p.name).join(', '));
+  }
+
+async updatePresetCapabilityOptions() {
+  if (!this.hasCapability('preset')) {
+    this.log("updatePresetCapabilityOptions: No preset capability!");
+    return;
+  }
+
+  const values = this.presets.map((preset, index) => ({
+    id: String(index),
+    title: {
+      en: preset.name,
+      nl: preset.name,
+    },
+  }));
+
+  if (values.length === 0) {
+    await this.setCapabilityOptions('preset', {
+      values: [
+        {
+          id: '0',
+          title: { en: 'None', nl: 'Geen' }
+        }
+      ]
+    });
+    return;
+  }
+
+  await this.setCapabilityOptions('preset', { values });
+
+  // Set UI picker to active preset
+  let lastIndex;
+
+  try {
+    lastIndex = await this.getStoreValue('lastPresetIndex');
+  } catch (e) {
+    lastIndex = null;
+  }
+
+  if (lastIndex == null || lastIndex < 0 || lastIndex >= values.length) {
+    lastIndex = 0;
+  }
+
+  try {
+    await this.setCapabilityValue('preset', String(lastIndex));
+  } catch (e) {
+    this.error('Error setting preset capability value', e);
+  }
+}
+
+async onCapabilityPreset(value) {
+  const index = Number(value);
+  this.log('Preset capability changed to index', index);
+
+  if (Number.isNaN(index) || index < 0 || index >= this.presets.length) {
+    this.log('Invalid preset index', value);
+    return;
+  }
+
+  await this.gotoPreset(index);
+
+  try {
+    await this.setStoreValue('lastPresetIndex', index);
+  } catch (e) {
+    this.error('Error storing lastPresetIndex', e);
+  }
+}
+
+async gotoPreset(index) {
+  const preset = this.presets[index];
+  if (!preset) {
+    this.log('Preset not found for index', index);
+    return;
+  }
+
+  this.log('Going to preset', index, preset.name);
+
+  await this.connect();
+
+  if (!this.moveCharacteristic) {
+    this.log('moveCharacteristic not set');
+    return;
+  }
+
+  try {
+    // moveBuffer = 4 bytes [extendMSB, extendLSB, turnMSB, turnLSB]
+    await this.moveCharacteristic.write(preset.moveBuffer);
+  } catch (err) {
+    this.log('Error writing preset move buffer', err);
+    throw err;
+  }
+
+  // optioneel: na een paar seconden loslaten
+  setTimeout(() => {
+    this.disconnect().catch(e => this.log('Disconnect after preset move failed', e));
+  }, 5000);
+}
 
 async setPosition() {
   this.log("setPosition entry")
@@ -362,6 +514,25 @@ async setPosition() {
     }
 
     await this.setPosition();
+  }
+
+  async onGotoPreset(presetIndex) {
+    const index = Number(presetIndex);
+    this.log('Flow: goto_preset', index);
+
+    if (Number.isNaN(index) || index < 0 || index >= this.presets.length) {
+      this.log('Invalid preset index in flow', presetIndex);
+      return;
+    }
+
+    await this.gotoPreset(index);
+
+    // optioneel: laatste preset opslaan
+    try {
+      await this.setStoreValue('lastPresetIndex', index);
+    } catch (e) {
+      this.error('Error storing lastPresetIndex from flow', e);
+    }
   }
 
   async onSettings({ oldSettings, newSettings, changedKeys }) {

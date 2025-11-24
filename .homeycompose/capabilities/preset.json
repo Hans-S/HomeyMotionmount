@@ -1,0 +1,18 @@
+{
+  "type": "enum",
+  "title": {
+    "en": "Preset",
+    "nl": "Preset"
+  },
+  "getable": true,
+  "setable": true,
+  "values": [
+    {
+      "id": "0",
+      "title": {
+        "en": "Preset 0",
+        "nl": "Preset 0"
+      }
+    }
+  ]
+}

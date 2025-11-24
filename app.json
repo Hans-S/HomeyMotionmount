@@ -1,7 +1,7 @@
 {
   "_comment": "This file is generated. Please edit .homeycompose/app.json instead.",
   "id": "net.thunderstone.motionmount",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "compatibility": ">=5.0.0",
   "sdk": 3,
   "brandColor": "#455A64",
@@ -64,6 +64,32 @@
             "max": 100
           }
         ]
+      },
+      {
+        "id": "goto_preset",
+        "title": {
+          "en": "Goto preset",
+          "nl": "Ga naar preset"
+        },
+        "titleFormatted": {
+          "en": "Goto preset [[preset]]",
+          "nl": "Ga naar preset [[preset]]"
+        },
+        "args": [
+          {
+            "name": "device",
+            "type": "device",
+            "filter": "driver_id=vogels"
+          },
+          {
+            "name": "preset",
+            "title": {
+              "en": "Preset",
+              "nl": "Preset"
+            },
+            "type": "autocomplete"
+          }
+        ]
       }
     ]
   },
@@ -72,12 +98,13 @@
       "name": {
         "en": "MotionMount"
       },
-      "class": "other",
+      "class": "tv",
       "capabilities": [
         "current_extend",
         "current_turn",
         "set_extend",
-        "set_turn"
+        "set_turn",
+        "preset"
       ],
       "platforms": [
         "local"
@@ -138,6 +165,24 @@
       "setable": false,
       "uiComponent": "sensor",
       "icon": "/assets/icon.svg"
+    },
+    "preset": {
+      "type": "enum",
+      "title": {
+        "en": "Preset",
+        "nl": "Preset"
+      },
+      "getable": true,
+      "setable": true,
+      "values": [
+        {
+          "id": "0",
+          "title": {
+            "en": "Preset 0",
+            "nl": "Preset 0"
+          }
+        }
+      ]
     },
     "set_extend": {
       "type": "number",

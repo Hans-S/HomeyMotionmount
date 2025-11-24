@@ -1,0 +1,26 @@
+{
+  "id": "goto_preset",
+  "title": {
+    "en": "Goto preset",
+    "nl": "Ga naar preset"
+  },
+  "titleFormatted": {
+    "en": "Goto preset [[preset]]",
+    "nl": "Ga naar preset [[preset]]"
+  },
+  "args": [
+    {
+      "name": "device",
+      "type": "device",
+      "filter": "driver_id=vogels"
+    },
+    {
+      "name": "preset",
+      "title": {
+        "en": "Preset",
+        "nl": "Preset"
+      },
+      "type": "autocomplete"
+    }
+  ]
+}

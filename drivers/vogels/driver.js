@@ -25,6 +25,50 @@ class MotionMountDriver extends Driver {
       await device.onGotoPosition({ extend, turn });
       return true;
     });
+
+
+  const gotoPresetAction = this.homey.flow.getActionCard('goto_preset');
+
+  // Autocomplete for preset names to be selected in flow
+  gotoPresetAction.registerArgumentAutocompleteListener('preset', async (query, args) => {
+    const device = args.device;
+    if (!device || !device.presets || !Array.isArray(device.presets)) {
+      this.log('goto_preset autocomplete: device has no presets');
+      return [];
+    }
+
+    const search = (query || '').toLowerCase();
+
+    return device.presets
+      .filter(preset =>
+        !search ||
+        (preset.name && preset.name.toLowerCase().includes(search))
+      )
+      .map((preset, index) => ({
+        id: String(index),     // index in device.presets
+        name: preset.name || `Preset ${index}`
+      }));
+  });
+
+  gotoPresetAction.registerRunListener(async (args, state) => {
+    const device = args.device;
+    const presetArg = args.preset;
+
+    if (!device || typeof device.onGotoPreset !== 'function') {
+      this.log('goto_preset: device missing or onGotoPreset not implemented');
+      return false;
+    }
+
+    // presetArg is { id, name }
+    const index = Number(presetArg && presetArg.id);
+    if (Number.isNaN(index)) {
+      this.log('goto_preset: invalid preset index from arg', presetArg);
+      return false;
+    }
+
+    await device.onGotoPreset(index);
+    return true;
+  });
   }
 
   /**
