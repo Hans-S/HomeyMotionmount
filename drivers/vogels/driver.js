@@ -13,9 +13,9 @@ class MotionMountDriver extends Driver {
     const gotoAction = this.homey.flow.getActionCard('goto_position');
 
     gotoAction.registerRunListener(async (args, state) => {
-      const device = args.device;
-      const extend = args.extend;
-      const turn   = args.turn;
+      const { device } = args;
+      const { extend } = args;
+      const { turn } = args;
 
       if (!device || typeof device.onGotoPosition !== 'function') {
         this.log('goto_position: device missing or onGotoPosition not implemented');
@@ -26,49 +26,46 @@ class MotionMountDriver extends Driver {
       return true;
     });
 
+    const gotoPresetAction = this.homey.flow.getActionCard('goto_preset');
 
-  const gotoPresetAction = this.homey.flow.getActionCard('goto_preset');
+    // Autocomplete for preset names to be selected in flow
+    gotoPresetAction.registerArgumentAutocompleteListener('preset', async (query, args) => {
+      const { device } = args;
+      if (!device || !device.presets || !Array.isArray(device.presets)) {
+        this.log('goto_preset autocomplete: device has no presets');
+        return [];
+      }
 
-  // Autocomplete for preset names to be selected in flow
-  gotoPresetAction.registerArgumentAutocompleteListener('preset', async (query, args) => {
-    const device = args.device;
-    if (!device || !device.presets || !Array.isArray(device.presets)) {
-      this.log('goto_preset autocomplete: device has no presets');
-      return [];
-    }
+      const search = (query || '').toLowerCase();
 
-    const search = (query || '').toLowerCase();
+      return device.presets
+        .filter(preset => !search
+          || (preset.name && preset.name.toLowerCase().includes(search)))
+        .map((preset, index) => ({
+          id: String(index), // index in device.presets
+          name: preset.name || `Preset ${index}`,
+        }));
+    });
 
-    return device.presets
-      .filter(preset =>
-        !search ||
-        (preset.name && preset.name.toLowerCase().includes(search))
-      )
-      .map((preset, index) => ({
-        id: String(index),     // index in device.presets
-        name: preset.name || `Preset ${index}`
-      }));
-  });
+    gotoPresetAction.registerRunListener(async (args, state) => {
+      const { device } = args;
+      const presetArg = args.preset;
 
-  gotoPresetAction.registerRunListener(async (args, state) => {
-    const device = args.device;
-    const presetArg = args.preset;
+      if (!device || typeof device.onGotoPreset !== 'function') {
+        this.log('goto_preset: device missing or onGotoPreset not implemented');
+        return false;
+      }
 
-    if (!device || typeof device.onGotoPreset !== 'function') {
-      this.log('goto_preset: device missing or onGotoPreset not implemented');
-      return false;
-    }
+      // presetArg is { id, name }
+      const index = Number(presetArg && presetArg.id);
+      if (Number.isNaN(index)) {
+        this.log('goto_preset: invalid preset index from arg', presetArg);
+        return false;
+      }
 
-    // presetArg is { id, name }
-    const index = Number(presetArg && presetArg.id);
-    if (Number.isNaN(index)) {
-      this.log('goto_preset: invalid preset index from arg', presetArg);
-      return false;
-    }
-
-    await device.onGotoPreset(index);
-    return true;
-  });
+      await device.onGotoPreset(index);
+      return true;
+    });
   }
 
   /**
@@ -78,7 +75,7 @@ class MotionMountDriver extends Driver {
    */
   async onPairListDevices() {
     // const advertisement = await this.homey.ble.find('Vogel's MotionMount');
-    
+
     const advertisements = await this.homey.ble.discover();
 
     return advertisements
@@ -91,7 +88,7 @@ class MotionMountDriver extends Driver {
           },
           store: {
             peripheralUuid: advertisement.uuid,
-          }
+          },
         };
       });
   }

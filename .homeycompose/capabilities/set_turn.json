@@ -1,6 +1,9 @@
 {
   "type": "number",
-  "title": "Set turn",
+  "title": {
+    "en": "Set turn",
+    "nl": "Draaien"
+  },
   "getable": true,
   "setable": true,
   "uiComponent": "slider",

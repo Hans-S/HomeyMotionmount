@@ -1,10 +1,12 @@
 {
   "id": "goto_position",
   "title": {
-    "en": "Goto position"
+    "en": "Goto position",
+    "nl": "Ga naar positie"
   },
   "titleFormatted": {
-    "en": "Goto position: extend [[extend]], turn [[turn]]"
+    "en": "Goto position: extend [[extend]], turn [[turn]]",
+    "nl": "Ga naar positie: uitschuiven [[extend]], draaien [[turn]]"
   },
   "args": [
     {
@@ -15,7 +17,8 @@
     {
       "name": "extend",
       "title": {
-        "en": "Extend"
+        "en": "Extend",
+        "nl": "Uitschuiven"
       },
       "type": "number",
       "min": 0,
@@ -24,7 +27,8 @@
     {
       "name": "turn",
       "title": {
-        "en": "Turn"
+        "en": "Turn",
+        "nl": "Draaien"
       },
       "type": "number",
       "min": -100,

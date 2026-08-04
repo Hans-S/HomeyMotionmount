@@ -1,6 +1,9 @@
 {
   "type": "string",
-  "title": "Current extend",
+  "title": {
+    "en": "Current extend",
+    "nl": "Huidige uitschuifpositie"
+  },
   "getable": true,
   "setable": false,
   "uiComponent": "sensor",

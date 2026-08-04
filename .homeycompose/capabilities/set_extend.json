@@ -1,6 +1,9 @@
 {
   "type": "number",
-  "title": "Set extend",
+  "title": {
+    "en": "Set extend",
+    "nl": "Uitschuiven"
+  },
   "getable": true,
   "setable": true,
   "uiComponent": "slider",

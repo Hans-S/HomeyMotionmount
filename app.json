@@ -1,7 +1,7 @@
 {
   "_comment": "This file is generated. Please edit .homeycompose/app.json instead.",
   "id": "net.thunderstone.motionmount",
-  "version": "0.0.2",
+  "version": "0.1.0",
   "compatibility": ">=5.0.0",
   "sdk": 3,
   "brandColor": "#455A64",
@@ -9,10 +9,12 @@
     "local"
   ],
   "name": {
-    "en": "Motionmounter"
+    "en": "Motionmounter",
+    "nl": "Motionmounter"
   },
   "description": {
-    "en": "Control Vogel's MotionMount"
+    "en": "Control Vogel's MotionMount",
+    "nl": "Bedien je Vogel's MotionMount"
   },
   "category": [
     "appliances"
@@ -22,8 +24,7 @@
   ],
   "images": {
     "small": "/assets/images/small.png",
-    "large": "/assets/images/large.png",
-    "xlarge": "/assets/images/xlarge.png"
+    "large": "/assets/images/large.png"
   },
   "author": {
     "name": "Hans Schotanus",
@@ -34,10 +35,12 @@
       {
         "id": "goto_position",
         "title": {
-          "en": "Goto position"
+          "en": "Goto position",
+          "nl": "Ga naar positie"
         },
         "titleFormatted": {
-          "en": "Goto position: extend [[extend]], turn [[turn]]"
+          "en": "Goto position: extend [[extend]], turn [[turn]]",
+          "nl": "Ga naar positie: uitschuiven [[extend]], draaien [[turn]]"
         },
         "args": [
           {
@@ -48,7 +51,8 @@
           {
             "name": "extend",
             "title": {
-              "en": "Extend"
+              "en": "Extend",
+              "nl": "Uitschuiven"
             },
             "type": "number",
             "min": 0,
@@ -57,7 +61,8 @@
           {
             "name": "turn",
             "title": {
-              "en": "Turn"
+              "en": "Turn",
+              "nl": "Draaien"
             },
             "type": "number",
             "min": -100,
@@ -96,7 +101,8 @@
   "drivers": [
     {
       "name": {
-        "en": "MotionMount"
+        "en": "MotionMount",
+        "nl": "MotionMount"
       },
       "class": "tv",
       "capabilities": [
@@ -114,8 +120,7 @@
       ],
       "images": {
         "small": "/drivers/vogels/assets/images/small.png",
-        "large": "/drivers/vogels/assets/images/large.png",
-        "xlarge": "/drivers/vogels/assets/images/xlarge.png"
+        "large": "/drivers/vogels/assets/images/large.png"
       },
       "pair": [
         {
@@ -135,16 +140,30 @@
         {
           "id": "polling",
           "type": "checkbox",
-          "value": false,
-          "label": "Polling"
+          "value": true,
+          "label": {
+            "en": "Polling",
+            "nl": "Polling"
+          },
+          "hint": {
+            "en": "When on, the app reads the mount every interval and keeps the sliders and current position tiles correct — also when the mount is moved outside the app. Turning this off leaves the sliders and position tiles stale until you next move the mount from within the app.",
+            "nl": "Indien aan leest de app de mount elke interval uit en houdt de schuifregelaars en de tegels met de huidige positie correct — ook als de mount buiten de app om wordt bewogen. Uitschakelen laat de schuifregelaars en positietegels verouderd totdat je de mount weer vanuit de app beweegt."
+          }
         },
         {
           "id": "polling_interval",
           "type": "number",
-          "label": "Polling interval",
-          "value": 15,
-          "min": 5,
-          "units": "minutes"
+          "label": {
+            "en": "Polling interval",
+            "nl": "Polling-interval"
+          },
+          "hint": {
+            "en": "How often the app reads the mount's position. Longer intervals reduce Bluetooth usage and contention with other apps.",
+            "nl": "Hoe vaak de app de positie van de mount uitleest. Langere intervallen verminderen Bluetooth-gebruik en conflicten met andere apps."
+          },
+          "value": 300,
+          "min": 60,
+          "units": "seconds"
         }
       ]
     }
@@ -152,7 +171,10 @@
   "capabilities": {
     "current_extend": {
       "type": "string",
-      "title": "Current extend",
+      "title": {
+        "en": "Current extend",
+        "nl": "Huidige uitschuifpositie"
+      },
       "getable": true,
       "setable": false,
       "uiComponent": "sensor",
@@ -160,7 +182,10 @@
     },
     "current_turn": {
       "type": "string",
-      "title": "Current turn",
+      "title": {
+        "en": "Current turn",
+        "nl": "Huidige draaipositie"
+      },
       "getable": true,
       "setable": false,
       "uiComponent": "sensor",
@@ -186,7 +211,10 @@
     },
     "set_extend": {
       "type": "number",
-      "title": "Set extend",
+      "title": {
+        "en": "Set extend",
+        "nl": "Uitschuiven"
+      },
       "getable": true,
       "setable": true,
       "uiComponent": "slider",
@@ -197,7 +225,10 @@
     },
     "set_turn": {
       "type": "number",
-      "title": "Set turn",
+      "title": {
+        "en": "Set turn",
+        "nl": "Draaien"
+      },
       "getable": true,
       "setable": true,
       "uiComponent": "slider",

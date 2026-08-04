@@ -1,5 +1,12 @@
 {
   "0.0.1": {
     "en": "Initial version. Allows setting extend and turn positions manually, and via set position flow card"
+  },
+  "0.0.3": {
+    "en": "Addes presets in UI and in a flow"
+  },
+  "0.1.0": {
+    "en": "Stability improvements: more reliable Bluetooth connection handling, corrected polling interval, connection timeouts and smoother (debounced) position sliders. Removed the position-changed trigger.",
+    "nl": "Stabiliteitsverbeteringen: betrouwbaardere Bluetooth-verbinding, gecorrigeerd polling-interval, verbindingstimeouts en soepelere schuifregelaars. De 'positie gewijzigd'-trigger is verwijderd."
   }
 }

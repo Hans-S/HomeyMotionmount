@@ -1,6 +1,6 @@
 {
   "id": "net.thunderstone.motionmount",
-  "version": "0.0.3",
+  "version": "0.1.0",
   "compatibility": ">=5.0.0",
   "sdk": 3,
   "brandColor": "#455A64",
@@ -8,10 +8,12 @@
     "local"
   ],
   "name": {
-    "en": "Motionmounter"
+    "en": "Motionmounter",
+    "nl": "Motionmounter"
   },
   "description": {
-    "en": "Control Vogel's MotionMount"
+    "en": "Control Vogel's MotionMount",
+    "nl": "Bedien je Vogel's MotionMount"
   },
   "category": [
     "appliances"
@@ -19,8 +21,7 @@
   "permissions": ["homey:wireless:ble"],
   "images": {
     "small": "/assets/images/small.png",
-    "large": "/assets/images/large.png",
-    "xlarge": "/assets/images/xlarge.png"
+    "large": "/assets/images/large.png"
   },
   "author": {
     "name": "Hans Schotanus",

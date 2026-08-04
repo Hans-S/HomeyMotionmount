@@ -2,15 +2,29 @@
   {
     "id": "polling",
     "type": "checkbox",
-    "value": false,
-    "label": "Polling"
+    "value": true,
+    "label": {
+      "en": "Polling",
+      "nl": "Polling"
+    },
+    "hint": {
+      "en": "When on, the app reads the mount every interval and keeps the sliders and current position tiles correct — also when the mount is moved outside the app. Turning this off leaves the sliders and position tiles stale until you next move the mount from within the app.",
+      "nl": "Indien aan leest de app de mount elke interval uit en houdt de schuifregelaars en de tegels met de huidige positie correct — ook als de mount buiten de app om wordt bewogen. Uitschakelen laat de schuifregelaars en positietegels verouderd totdat je de mount weer vanuit de app beweegt."
+    }
   },
   {
     "id": "polling_interval",
     "type": "number",
-    "label": "Polling interval",
-    "value": 15,
-    "min": 5,
-    "units": "minutes"
+    "label": {
+      "en": "Polling interval",
+      "nl": "Polling-interval"
+    },
+    "hint": {
+      "en": "How often the app reads the mount's position. Longer intervals reduce Bluetooth usage and contention with other apps.",
+      "nl": "Hoe vaak de app de positie van de mount uitleest. Langere intervallen verminderen Bluetooth-gebruik en conflicten met andere apps."
+    },
+    "value": 300,
+    "min": 60,
+    "units": "seconds"
   }
 ]

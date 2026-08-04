@@ -1,6 +1,9 @@
 {
   "type": "string",
-  "title": "Current turn",
+  "title": {
+    "en": "Current turn",
+    "nl": "Huidige draaipositie"
+  },
   "getable": true,
   "setable": false,
   "uiComponent": "sensor",
