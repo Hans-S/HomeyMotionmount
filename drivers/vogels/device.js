@@ -16,6 +16,15 @@ const BLE_CONNECT_TIMEOUT_MS = 15000;
 // single-connection mount mid-operation) and frees the lock. See _withTimeout.
 const BLE_READ_TIMEOUT_MS = 7000;
 
+// Upper bound on a disconnect. An un-timed disconnect that hangs would hold the
+// BLE mutex forever and leave the mount's single connection slot half-open.
+const BLE_DISCONNECT_TIMEOUT_MS = 8000;
+
+// Backstop: hard cap on any single locked BLE operation. The per-call timeouts
+// already bound each step, so this only catches an unforeseen hang and keeps the
+// mutex from ever jamming permanently.
+const BLE_OP_TIMEOUT_MS = 150000;
+
 class MotionMountDevice extends Device {
 
   async onInit() {
@@ -151,32 +160,50 @@ class MotionMountDevice extends Device {
         throw new Error('Could not make initial BLE connection');
       }
 
-      this.service = await this.peripheral.getService('3e6fe65ded7811e4895e00026fd5c52c');
+      try {
+        this.service = await this._withTimeout(
+          this.peripheral.getService('3e6fe65ded7811e4895e00026fd5c52c'),
+          BLE_CONNECT_TIMEOUT_MS,
+          'BLE getService',
+        );
 
-      const characteristics = await this.service.discoverCharacteristics();
-      characteristics.forEach(characteristic => {
-        if (characteristic.uuid === 'c005fa0006514800b000000000000000') {
-          this.extendPositionCharacteristic = characteristic;
-        } else if (characteristic.uuid === 'c005fa0106514800b000000000000000') {
-          this.turnPositionCharacteristic = characteristic;
-        } else if (characteristic.uuid === 'c005fa2106514800b000000000000000') {
-          this.moveCharacteristic = characteristic;
-        }
-
-        // Store preset slot characteristics (0x0a..0x13)
-        if (characteristic.uuid.startsWith('c005fa')) {
-          const byteVal = parseInt(characteristic.uuid.substring(6, 8), 16);
-
-          if (byteVal >= 0x0a && byteVal <= 0x13) {
-            this.presetCharacteristics.push(characteristic);
-            this.log('Found possible preset characteristic:', characteristic.uuid);
+        const characteristics = await this._withTimeout(
+          this.service.discoverCharacteristics(),
+          BLE_CONNECT_TIMEOUT_MS,
+          'BLE discoverCharacteristics',
+        );
+        characteristics.forEach(characteristic => {
+          if (characteristic.uuid === 'c005fa0006514800b000000000000000') {
+            this.extendPositionCharacteristic = characteristic;
+          } else if (characteristic.uuid === 'c005fa0106514800b000000000000000') {
+            this.turnPositionCharacteristic = characteristic;
+          } else if (characteristic.uuid === 'c005fa2106514800b000000000000000') {
+            this.moveCharacteristic = characteristic;
           }
-        }
-      });
 
-      this.peripheral.on('disconnect', () => {
-        this.log(`disconnected: ${this.getName()}`);
-      });
+          // Store preset slot characteristics (0x0a..0x13)
+          if (characteristic.uuid.startsWith('c005fa')) {
+            const byteVal = parseInt(characteristic.uuid.substring(6, 8), 16);
+
+            if (byteVal >= 0x0a && byteVal <= 0x13) {
+              this.presetCharacteristics.push(characteristic);
+              this.log('Found possible preset characteristic:', characteristic.uuid);
+            }
+          }
+        });
+
+        this.peripheral.on('disconnect', () => {
+          this.log(`disconnected: ${this.getName()}`);
+        });
+      } catch (err) {
+        // We connected but couldn't finish discovery. Release the link and drop
+        // the handle so we don't leak a half-open connection or get stuck with a
+        // connected-but-undiscovered peripheral. Next connect() rebuilds fresh.
+        this.log(`Discovery failed, releasing connection: ${err}`);
+        await this.disconnect();
+        this._resetConnection();
+        throw err;
+      }
     } else {
       this.log(`Peripheral known, isConnected: ${this.peripheral.isConnected}`);
       this.log(`State: ${this.peripheral.state}`);
@@ -216,10 +243,12 @@ class MotionMountDevice extends Device {
         return;
       } catch (err) {
         this.log('connect failed:', err.message);
-        try {
-          await this.peripheral.disconnect();
-        } catch (e) {
-          // ignore: we're already handling a failed connect
+        if (this.peripheral) {
+          try {
+            await this._withTimeout(this.peripheral.disconnect(), BLE_DISCONNECT_TIMEOUT_MS, 'BLE disconnect');
+          } catch (e) {
+            // ignore: we're already handling a failed connect
+          }
         }
         if (attempt === MAX_RETRIES) {
           throw err;
@@ -237,9 +266,33 @@ class MotionMountDevice extends Device {
   // and writes (commands) never overlap on the peripheral (#3). Failures are
   // isolated so one rejected operation doesn't break the queue for the next.
   _runExclusive(fn) {
-    const result = this._bleLock.then(() => fn());
+    const result = this._bleLock
+      .then(() => this._withTimeout(fn(), BLE_OP_TIMEOUT_MS, 'BLE operation'))
+      .catch(err => {
+        // Backstop: if a locked op blew the hard cap, the connection may be
+        // wedged. Discard it so the next op rebuilds cleanly.
+        if (err && /BLE operation timed out/.test(err.message)) {
+          this.error('BLE operation exceeded hard cap; resetting connection', err);
+          this._resetConnection();
+        }
+        throw err;
+      });
+    // Keep the chain alive even if this operation rejected.
     this._bleLock = result.then(() => {}, () => {});
     return result;
+  }
+
+  // Discards the current BLE handle and cached characteristics so the next
+  // connect() rebuilds from scratch (fresh connect + rediscovery). Used to
+  // self-heal when a disconnect/discovery fails and the peripheral may be
+  // wedged or half-open. this.presets (the loaded preset data) is kept.
+  _resetConnection() {
+    this.peripheral = undefined;
+    this.service = undefined;
+    this.extendPositionCharacteristic = undefined;
+    this.turnPositionCharacteristic = undefined;
+    this.moveCharacteristic = undefined;
+    this.presetCharacteristics = [];
   }
 
   // Rejects if the wrapped promise doesn't settle within ms, so a hung BLE call
@@ -268,14 +321,18 @@ class MotionMountDevice extends Device {
   }
 
   async disconnect() {
-    if (this.peripheral) {
-      try {
-        await this.peripheral.disconnect();
-      } catch (error) {
-        this.log(`Error disconnecting: ${error}`);
-      }
-    } else {
+    if (!this.peripheral) {
       this.log('Not disconnecting, no peripheral to disconnect');
+      return;
+    }
+    try {
+      await this._withTimeout(this.peripheral.disconnect(), BLE_DISCONNECT_TIMEOUT_MS, 'BLE disconnect');
+    } catch (error) {
+      // A hung/failed disconnect can leave the mount's single connection slot
+      // occupied. Drop the handle so the next connect() rebuilds cleanly instead
+      // of reusing a wedged peripheral (self-heal).
+      this.log(`Error disconnecting, discarding peripheral handle: ${error}`);
+      this._resetConnection();
     }
   }
 
@@ -558,7 +615,12 @@ class MotionMountDevice extends Device {
 
     const loop = async () => {
       if (epoch !== this._pollEpoch) return;
-      await this.getPosition();
+      try {
+        await this.getPosition();
+      } catch (err) {
+        // Never let a failed poll stop the loop (e.g. the hard-cap watchdog).
+        this.error('Poll failed', err);
+      }
       // Re-check after the await: the loop may have been stopped/restarted
       // while getPosition was running, which is how the old refresh() leaked
       // stacked timers on every reconnect (#2).

@@ -8,5 +8,9 @@
   "0.1.0": {
     "en": "Stability improvements: more reliable Bluetooth connection handling, corrected polling interval, connection timeouts and smoother (debounced) position sliders. Removed the position-changed trigger.",
     "nl": "Stabiliteitsverbeteringen: betrouwbaardere Bluetooth-verbinding, gecorrigeerd polling-interval, verbindingstimeouts en soepelere schuifregelaars. De 'positie gewijzigd'-trigger is verwijderd."
+  },
+  "0.1.1": {
+    "en": "Bluetooth reliability: every Bluetooth action now has a timeout, and a stuck or half-open connection is automatically rebuilt, so the mount no longer stays unreachable after a failed disconnect.",
+    "nl": "Bluetooth-betrouwbaarheid: elke Bluetooth-actie heeft nu een time-out en een vastgelopen of half-open verbinding wordt automatisch opnieuw opgebouwd, zodat de mount niet meer onbereikbaar blijft na een mislukte disconnect."
   }
 }
