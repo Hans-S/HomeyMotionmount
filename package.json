@@ -1,6 +1,6 @@
 {
   "name": "net.thunderstone.motionmount",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "main": "app.js",
   "scripts": {
     "lint": "eslint --ext .js,.ts --ignore-path .gitignore ."
