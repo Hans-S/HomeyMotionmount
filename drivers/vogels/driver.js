@@ -2,6 +2,17 @@
 
 const { Driver } = require('homey');
 
+// Known MotionMount BLE service UUIDs (lowercase, no dashes). Pairing lists any
+// device advertising one of these, which is model- and rename-proof — unlike the
+// old exact-localName match. Add other models (e.g. the 7356) here once their
+// advertised service UUID is confirmed.
+const KNOWN_SERVICE_UUIDS = [
+  '3e6fe65ded7811e4895e00026fd5c52c', // MotionMount 7355
+];
+
+// Normalize a BLE UUID for comparison (strip dashes, lowercase).
+const normalizeUuid = uuid => String(uuid).replace(/-/g, '').toLowerCase();
+
 class MotionMountDriver extends Driver {
 
   /**
@@ -74,23 +85,27 @@ class MotionMountDriver extends Driver {
    * This should return an array with the data of devices that are available for pairing.
    */
   async onPairListDevices() {
-    // const advertisement = await this.homey.ble.find('Vogel's MotionMount');
-
     const advertisements = await this.homey.ble.discover();
 
-    return advertisements
-      .filter(advertisement => advertisement.localName === "Vogel's MotionMount")
-      .map(advertisement => {
-        return {
-          name: advertisement.localName,
-          data: {
-            id: advertisement.uuid,
-          },
-          store: {
-            peripheralUuid: advertisement.uuid,
-          },
-        };
-      });
+    const known = KNOWN_SERVICE_UUIDS.map(normalizeUuid);
+
+    const devices = advertisements
+      .filter(advertisement => Array.isArray(advertisement.serviceUuids)
+        && advertisement.serviceUuids.some(uuid => known.includes(normalizeUuid(uuid))))
+      .map(advertisement => ({
+        // The advertisement may carry no localName (renamed, or not broadcast),
+        // so fall back to a generic name; detection is by service UUID.
+        name: advertisement.localName || 'MotionMount',
+        data: {
+          id: advertisement.uuid,
+        },
+        store: {
+          peripheralUuid: advertisement.uuid,
+        },
+      }));
+
+    this.log(`Pairing scan: ${advertisements.length} BLE device(s) seen, ${devices.length} MotionMount(s) matched`);
+    return devices;
   }
 
 }

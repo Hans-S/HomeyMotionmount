@@ -16,5 +16,9 @@
   "0.1.2": {
     "en": "Smaller app: removed an unused image-processing dependency that was being bundled unnecessarily.",
     "nl": "Kleinere app: een ongebruikte afbeeldingsbibliotheek die onnodig werd meegeleverd, is verwijderd."
+  },
+  "0.1.3": {
+    "en": "Pairing now finds the MotionMount by its Bluetooth service instead of its exact name, so a renamed mount is still detected.",
+    "nl": "Koppelen vindt de MotionMount nu via zijn Bluetooth-service in plaats van de exacte naam, zodat een hernoemde mount toch wordt gevonden."
   }
 }
