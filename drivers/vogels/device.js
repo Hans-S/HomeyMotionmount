@@ -41,6 +41,12 @@ class MotionMountDevice extends Device {
     this._timerId = null;
     this._pollEpoch = 0;
 
+    // BLE connection lifecycle counters, for leak diagnosis (0.1.4). A climbing
+    // fresh-connect count and resets while still connected point at orphaned
+    // connections accumulating on the mount and on Homey's BLE stack.
+    this._freshConnectCount = 0;
+    this._resetCount = 0;
+
     // Debounce timer for slider-driven position writes.
     this._setPositionTimer = null;
 
@@ -231,6 +237,8 @@ class MotionMountDevice extends Device {
         }
 
         if (!this.peripheral) {
+          this._freshConnectCount += 1;
+          this.log(`Fresh advertisement.connect() (new peripheral) #${this._freshConnectCount}`);
           this.peripheral = await this._withTimeout(this.advertisement.connect(), BLE_CONNECT_TIMEOUT_MS, 'BLE connect');
         } else {
           await this._withTimeout(this.peripheral.connect(), BLE_CONNECT_TIMEOUT_MS, 'BLE connect');
@@ -287,6 +295,18 @@ class MotionMountDevice extends Device {
   // self-heal when a disconnect/discovery fails and the peripheral may be
   // wedged or half-open. this.presets (the loaded preset data) is kept.
   _resetConnection() {
+    this._resetCount += 1;
+
+    // Diagnostics (0.1.4): if we discard a peripheral that Homey still thinks is
+    // connected, we're almost certainly orphaning a live BLE connection — which
+    // accumulates on the mount (single slot) and on Homey's BLE stack.
+    const wasConnected = !!(this.peripheral && this.peripheral.isConnected);
+    const state = this.peripheral ? this.peripheral.state : 'none';
+    this.log(`_resetConnection #${this._resetCount}: discarding handle (wasConnected=${wasConnected}, state=${state}, freshConnects so far=${this._freshConnectCount})`);
+    if (wasConnected) {
+      this.error('_resetConnection is discarding a STILL-CONNECTED peripheral — likely orphaning a BLE connection (leak suspect)');
+    }
+
     this.peripheral = undefined;
     this.service = undefined;
     this.extendPositionCharacteristic = undefined;

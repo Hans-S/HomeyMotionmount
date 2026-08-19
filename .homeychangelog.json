@@ -20,5 +20,9 @@
   "0.1.3": {
     "en": "Pairing now finds the MotionMount by its Bluetooth service instead of its exact name, so a renamed mount is still detected.",
     "nl": "Koppelen vindt de MotionMount nu via zijn Bluetooth-service in plaats van de exacte naam, zodat een hernoemde mount toch wordt gevonden."
+  },
+  "0.1.4": {
+    "en": "Added diagnostic logging to help track down an occasional Bluetooth connection lock-up.",
+    "nl": "Extra diagnostische logging toegevoegd om een af en toe optredende Bluetooth-verbindingsblokkade op te sporen."
   }
 }
