@@ -25,6 +25,12 @@ const BLE_DISCONNECT_TIMEOUT_MS = 8000;
 // mutex from ever jamming permanently.
 const BLE_OP_TIMEOUT_MS = 150000;
 
+// How many times to (re)connect and retry a BLE operation before giving up. The
+// mount drops some connections within tens of ms of connecting, so a command
+// (preset/position write, or a read) can hit a dead link; a fresh reconnect
+// usually lands the next attempt.
+const BLE_OP_ATTEMPTS = 3;
+
 class MotionMountDevice extends Device {
 
   async onInit() {
@@ -328,6 +334,33 @@ class MotionMountDevice extends Device {
     return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
   }
 
+  // Ensures a connection and runs a characteristic operation, retrying on
+  // failure. Between attempts it closes the (possibly dead or half-open) link
+  // cleanly and discards the handle, so the next attempt reconnects fresh and
+  // re-discovers characteristics. This recovers from the mount dropping the
+  // connection right after connect (write/read timeout) and from stale cached
+  // handles (could_not_find_characteristic). Disconnecting before discarding
+  // avoids orphaning a live connection.
+  async _runWithRetry(operation, label) {
+    let lastErr;
+    for (let attempt = 1; attempt <= BLE_OP_ATTEMPTS; attempt++) {
+      try {
+        await this.connect();
+        return await operation();
+      } catch (err) {
+        lastErr = err;
+        this.log(`${label}: attempt ${attempt}/${BLE_OP_ATTEMPTS} failed: ${err.message}`);
+        if (attempt === BLE_OP_ATTEMPTS) {
+          break;
+        }
+        await this.disconnect();
+        this._resetConnection();
+        await this.sleep(500);
+      }
+    }
+    throw lastErr;
+  }
+
   // Coalesces rapid slider changes into a single BLE write once the user stops
   // moving the slider for SET_POSITION_DEBOUNCE_MS.
   _scheduleSetPosition() {
@@ -474,15 +507,15 @@ class MotionMountDevice extends Device {
     this.log('Going to preset', index, preset.name);
 
     try {
-      await this.connect();
-
-      if (!this.moveCharacteristic) {
-        this.log('moveCharacteristic not set');
-        return;
-      }
-
-      // moveBuffer = 4 bytes [extendMSB, extendLSB, turnMSB, turnLSB]
-      await this._withTimeout(this.moveCharacteristic.write(preset.moveBuffer), BLE_READ_TIMEOUT_MS, 'Preset write');
+      await this._runWithRetry(async () => {
+        if (!this.moveCharacteristic) {
+          // Not discovered on this connection; throwing makes _runWithRetry
+          // reconnect fresh and re-discover before the next attempt.
+          throw new Error('moveCharacteristic not found');
+        }
+        // moveBuffer = 4 bytes [extendMSB, extendLSB, turnMSB, turnLSB]
+        await this._withTimeout(this.moveCharacteristic.write(preset.moveBuffer), BLE_READ_TIMEOUT_MS, 'Preset write');
+      }, 'gotoPreset');
 
       // Keep the position cache in sync with the preset we just moved to, so a
       // later single-axis slider change doesn't re-send a stale value for the
@@ -494,7 +527,7 @@ class MotionMountDevice extends Device {
       await this._publishExtend(this.extendPosition);
       await this._publishTurn(this.turnPosition);
     } catch (err) {
-      this.error('Error writing preset move buffer', err);
+      this.error('Error writing preset move buffer after retries', err);
     } finally {
       try {
         if (this.peripheral?.isConnected) {
@@ -518,32 +551,30 @@ class MotionMountDevice extends Device {
       return;
     }
 
+    const newPosition = Buffer.from([
+      this.extendPosition[0],
+      this.extendPosition[1],
+      this.turnPosition[0],
+      this.turnPosition[1],
+    ]);
+
     try {
-      const newPosition = Buffer.from([
-        this.extendPosition[0],
-        this.extendPosition[1],
-        this.turnPosition[0],
-        this.turnPosition[1],
-      ]);
       this.log(newPosition);
 
-      this.log('setPosition: Connecting...');
-      await this.connect();
-
-      if (!this.moveCharacteristic) {
-        this.log('moveCharacteristic not set, cannot write position');
-        return;
-      }
-
-      this.log('setPosition: Writing new position');
-      await this._withTimeout(this.moveCharacteristic.write(newPosition), BLE_READ_TIMEOUT_MS, 'Position write');
+      await this._runWithRetry(async () => {
+        if (!this.moveCharacteristic) {
+          throw new Error('moveCharacteristic not found');
+        }
+        this.log('setPosition: Writing new position');
+        await this._withTimeout(this.moveCharacteristic.write(newPosition), BLE_READ_TIMEOUT_MS, 'Position write');
+      }, 'setPosition');
 
       // Optimistically reflect the position we just commanded, so the sliders
       // and tiles are correct immediately without waiting for the next poll.
       await this._publishExtend(this.extendPosition);
       await this._publishTurn(this.turnPosition);
     } catch (error) {
-      this.error('Error in setPosition:', error);
+      this.error('Error in setPosition after retries:', error);
     } finally {
     // Disconnect inside the locked operation instead of a detached 5s timer.
     // The old setTimeout disconnect could fire mid-read during a poll, which is

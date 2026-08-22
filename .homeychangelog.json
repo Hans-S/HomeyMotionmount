@@ -24,5 +24,9 @@
   "0.1.4": {
     "en": "Added diagnostic logging to help track down an occasional Bluetooth connection lock-up.",
     "nl": "Extra diagnostische logging toegevoegd om een af en toe optredende Bluetooth-verbindingsblokkade op te sporen."
+  },
+  "0.1.5": {
+    "en": "Preset and position commands now retry automatically when the mount drops the connection, so a move is no longer silently lost.",
+    "nl": "Preset- en positieopdrachten proberen het nu automatisch opnieuw als de mount de verbinding verbreekt, zodat een beweging niet meer stilletjes verloren gaat."
   }
 }
