@@ -71,6 +71,12 @@ class MotionMountDevice extends Device {
     this._breakerTimer = null;
     this._breakerOpen = false;
 
+    // Startup reconnect-retry timer, and a flag so timers that fire after the
+    // device is deleted bail out instead of calling setUnavailable() on a device
+    // that no longer exists (which rejects with "Not Found" and crashed the app).
+    this._reconnectTimer = null;
+    this._destroyed = false;
+
     // Register all capability listeners once, here in onInit. Doing this in
     // initialize() meant a later reconnect() -> initialize() re-registered them,
     // which the SDK rejects (#2).
@@ -104,24 +110,21 @@ class MotionMountDevice extends Device {
       this.log(`Invalid turn position ${value}. Must be between -100 and 100`);
     });
 
-    this.setUnavailable('Awaiting initial connect');
+    this.setUnavailable('Awaiting initial connect').catch(() => {});
 
     try {
       await this.connect();
       await this.loadPresets();
       await this.updatePresetCapabilityOptions();
-      this.setAvailable();
+      this.setAvailable().catch(() => {});
       // initialize() reads the initial position: immediately via _startPolling()
       // when polling is on, or once directly when it's off.
       this.initialize();
       this.log('MotionMountDevice has been initialized');
     } catch (error) {
       this.error(`Error in initial connect: ${error}`);
-      this.setUnavailable(`Initial connection to device failed: ${error}`);
-
-      setTimeout(() => {
-        this.reconnect();
-      }, 30000);
+      this.setUnavailable(`Initial connection to device failed: ${error}`).catch(() => {});
+      this._scheduleReconnect();
     }
   }
 
@@ -146,19 +149,31 @@ class MotionMountDevice extends Device {
   }
 
   async reconnect() {
-    // This is used if initial connection fails as a retry mechanism
+    // This is used if initial connection fails as a retry mechanism.
+    if (this._destroyed) {
+      return;
+    }
     try {
       await this.connect();
-      this.setAvailable();
+      this.setAvailable().catch(() => {});
       this.initialize();
     } catch (error) {
       this.error(`Error on reconnect: ${error}`);
-      this.setUnavailable(`Reconnect to device failed: ${error}`);
-
-      setTimeout(() => {
-        this.reconnect();
-      }, 30000);
+      this.setUnavailable(`Reconnect to device failed: ${error}`).catch(() => {});
+      this._scheduleReconnect();
     }
+  }
+
+  // Schedules a single startup reconnect attempt, tracking the timer so it can be
+  // cancelled on delete (a stray reconnect after deletion crashed the app).
+  _scheduleReconnect() {
+    if (this._destroyed) {
+      return;
+    }
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+    }
+    this._reconnectTimer = setTimeout(() => this.reconnect(), 30000);
   }
 
   // Public connect: records reachability for the circuit breaker (a connect
@@ -865,6 +880,9 @@ class MotionMountDevice extends Device {
    * onDeleted is called when the user deleted the device.
    */
   async onDeleted() {
+    // Stop every timer so nothing fires against a device that no longer exists
+    // (a stray reconnect() calling setUnavailable() crashed the app).
+    this._destroyed = true;
     this._stopPolling();
     if (this._setPositionTimer) {
       clearTimeout(this._setPositionTimer);
@@ -873,6 +891,10 @@ class MotionMountDevice extends Device {
     if (this._breakerTimer) {
       clearTimeout(this._breakerTimer);
       this._breakerTimer = null;
+    }
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
     }
     this.log('MotionMountDevice has been deleted');
   }
