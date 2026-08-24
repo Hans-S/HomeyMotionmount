@@ -36,5 +36,9 @@
   "0.1.7": {
     "en": "Fixed a crash that could occur when a device was removed while it was still trying to connect.",
     "nl": "Crash opgelost die kon optreden wanneer een apparaat werd verwijderd terwijl het nog probeerde verbinding te maken."
+  },
+  "0.1.8": {
+    "en": "Simpler, gentler Bluetooth: a failed operation no longer multiplies into several connect attempts, which is easier on both the mount and Homey. New optional 'Re-discover services on reconnect' device setting for extra robustness if needed.",
+    "nl": "Eenvoudiger, rustiger Bluetooth: een mislukte actie leidt niet meer tot meerdere verbindingspogingen, wat prettiger is voor zowel de mount als Homey. Nieuwe optionele apparaatinstelling 'Services opnieuw ontdekken bij herverbinden' voor extra robuustheid indien nodig."
   }
 }
