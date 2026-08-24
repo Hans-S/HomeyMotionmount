@@ -28,5 +28,9 @@
   "0.1.5": {
     "en": "Preset and position commands now retry automatically when the mount drops the connection, so a move is no longer silently lost.",
     "nl": "Preset- en positieopdrachten proberen het nu automatisch opnieuw als de mount de verbinding verbreekt, zodat een beweging niet meer stilletjes verloren gaat."
+  },
+  "0.1.6": {
+    "en": "Faster Bluetooth timeouts and a back-off: when the mount stops responding the app now stops retrying and waits (increasingly longer) before trying again, so it no longer ties up Homey's Bluetooth. The device shows as unavailable while unreachable and recovers on its own.",
+    "nl": "Snellere Bluetooth-time-outs en een terugvalmechanisme: als de mount niet meer reageert stopt de app met herhaaldelijk proberen en wacht (steeds langer) voor een nieuwe poging, zodat Homey's Bluetooth niet meer bezet raakt. Het apparaat wordt als niet-beschikbaar getoond zolang het onbereikbaar is en herstelt vanzelf."
   }
 }

@@ -6,30 +6,38 @@ const { Device } = require('homey');
 // BLE write at the end instead of one write per intermediate value.
 const SET_POSITION_DEBOUNCE_MS = 500;
 
-// Upper bound on a single BLE find/connect, so onInit and reconnect can never
-// hang indefinitely on an unresponsive peripheral.
-const BLE_CONNECT_TIMEOUT_MS = 15000;
+// Upper bound on a BLE scan/find (only runs on the first connect, and scanning
+// can genuinely take a few seconds).
+const BLE_FIND_TIMEOUT_MS = 12000;
 
-// Upper bound on a single characteristic read/write. The SDK's own read timeout
-// is ~30s, during which the BLE mutex stays held and every queued command
-// stalls. A short bound fails fast (e.g. when another central has grabbed the
-// single-connection mount mid-operation) and frees the lock. See _withTimeout.
-const BLE_READ_TIMEOUT_MS = 7000;
+// Upper bound on a single connect. A healthy connect completes in well under a
+// second, so keep this short: fail fast rather than tying up Homey's BLE stack
+// for 15s per attempt against an unresponsive mount. The circuit breaker
+// provides the "wait much longer before trying again" instead.
+const BLE_CONNECT_TIMEOUT_MS = 6000;
 
-// Upper bound on a disconnect. An un-timed disconnect that hangs would hold the
-// BLE mutex forever and leave the mount's single connection slot half-open.
-const BLE_DISCONNECT_TIMEOUT_MS = 8000;
+// Upper bound on a single characteristic read/write (a healthy one is ~2s).
+const BLE_READ_TIMEOUT_MS = 5000;
+
+// Upper bound on a disconnect.
+const BLE_DISCONNECT_TIMEOUT_MS = 4000;
 
 // Backstop: hard cap on any single locked BLE operation. The per-call timeouts
 // already bound each step, so this only catches an unforeseen hang and keeps the
-// mutex from ever jamming permanently.
-const BLE_OP_TIMEOUT_MS = 150000;
+// mutex from ever jamming permanently. Kept comfortably above the worst-case
+// legit op (a 2-attempt write with reconnects) so it never false-trips.
+const BLE_OP_TIMEOUT_MS = 120000;
 
-// How many times to (re)connect and retry a BLE operation before giving up. The
-// mount drops some connections within tens of ms of connecting, so a command
-// (preset/position write, or a read) can hit a dead link; a fresh reconnect
-// usually lands the next attempt.
-const BLE_OP_ATTEMPTS = 3;
+// How many times to (re)connect and retry a single command before giving up.
+const BLE_OP_ATTEMPTS = 2;
+
+// Circuit breaker: after this many consecutive failures to reach the mount, stop
+// polling/hammering and back off for a growing delay. Relentless failed connects
+// are what wedge Homey's own BLE stack (needing a Homey restart); backing off
+// keeps it healthy so a mount power-cycle alone recovers. Backoff grows through
+// the list (minutes) and holds at the last value.
+const BREAKER_THRESHOLD = 3;
+const BREAKER_BACKOFF_MINUTES = [1, 5, 15, 30];
 
 class MotionMountDevice extends Device {
 
@@ -55,6 +63,13 @@ class MotionMountDevice extends Device {
 
     // Debounce timer for slider-driven position writes.
     this._setPositionTimer = null;
+
+    // Circuit breaker state: consecutive reachability failures, current backoff
+    // step, the pending probe timer, and whether the breaker is currently open.
+    this._consecutiveFailures = 0;
+    this._breakerBackoffIndex = 0;
+    this._breakerTimer = null;
+    this._breakerOpen = false;
 
     // Register all capability listeners once, here in onInit. Doing this in
     // initialize() meant a later reconnect() -> initialize() re-registered them,
@@ -146,15 +161,27 @@ class MotionMountDevice extends Device {
     }
   }
 
-  // Connect to the peripheral and discover the characteristics we use.
-  // Throws on failure so callers (onInit, reconnect) can rely on the rejection
-  // to drive their retry logic (#4).
+  // Public connect: records reachability for the circuit breaker (a connect
+  // success means the mount is reachable; a failure counts toward tripping the
+  // breaker). The actual work is in _connect.
   async connect() {
+    try {
+      await this._connect();
+      this._onBleReachable();
+    } catch (err) {
+      this._onBleUnreachable();
+      throw err;
+    }
+  }
+
+  // Connect to the peripheral and discover the characteristics we use.
+  // Throws on failure so callers can rely on the rejection to drive retries (#4).
+  async _connect() {
     if (!this.advertisement) {
       try {
         this.advertisement = await this._withTimeout(
           this.homey.ble.find(this.getStore().peripheralUuid),
-          BLE_CONNECT_TIMEOUT_MS,
+          BLE_FIND_TIMEOUT_MS,
           'BLE find',
         );
         this.log('Peripheral found');
@@ -230,7 +257,7 @@ class MotionMountDevice extends Device {
   }
 
   async internalConnect() {
-    const MAX_RETRIES = 3;
+    const MAX_RETRIES = 2;
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
@@ -359,6 +386,78 @@ class MotionMountDevice extends Device {
       }
     }
     throw lastErr;
+  }
+
+  // --- Circuit breaker ---------------------------------------------------
+  // The mount occasionally wedges its BLE radio (refusing all connections until
+  // power-cycled). When that happens, relentlessly retrying wedges Homey's BLE
+  // stack too. The breaker notices repeated unreachability, stops polling, and
+  // backs off for a growing delay, probing occasionally, so Homey stays healthy
+  // and recovers on its own once the mount is power-cycled.
+
+  // A connect succeeded: clear the failure streak and, if the breaker was open,
+  // close it and resume normal polling.
+  _onBleReachable() {
+    const wasOpen = this._breakerOpen;
+    this._consecutiveFailures = 0;
+    this._breakerBackoffIndex = 0;
+    if (this._breakerTimer) {
+      clearTimeout(this._breakerTimer);
+      this._breakerTimer = null;
+    }
+    if (wasOpen) {
+      this._breakerOpen = false;
+      this.log('Circuit breaker CLOSED: mount reachable again');
+      this.setAvailable().catch(() => {});
+      if (this.getSettings().polling === true) {
+        this._startPolling();
+      }
+    }
+  }
+
+  // A connect failed: count it and trip the breaker once we cross the threshold.
+  _onBleUnreachable() {
+    this._consecutiveFailures += 1;
+    this.log(`Circuit breaker: reachability failure ${this._consecutiveFailures}/${BREAKER_THRESHOLD}`);
+    if (this._consecutiveFailures >= BREAKER_THRESHOLD) {
+      this._openBreaker();
+    }
+  }
+
+  // Stop polling and schedule a single probe after a growing backoff.
+  _openBreaker() {
+    this._breakerOpen = true;
+    this._stopPolling();
+
+    const idx = Math.min(this._breakerBackoffIndex, BREAKER_BACKOFF_MINUTES.length - 1);
+    const minutes = BREAKER_BACKOFF_MINUTES[idx];
+    this._breakerBackoffIndex += 1;
+
+    this.log(`Circuit breaker OPEN: ${this._consecutiveFailures} failures, backing off ${minutes} min`);
+    this.setUnavailable(`Mount unreachable — retrying in ${minutes} min`).catch(() => {});
+
+    if (this._breakerTimer) {
+      clearTimeout(this._breakerTimer);
+    }
+    this._breakerTimer = setTimeout(() => this._probe(), minutes * 60000);
+  }
+
+  // One probe attempt while the breaker is open. getPosition records the outcome
+  // via connect(): success closes the breaker (and resumes polling), failure
+  // re-opens it with the next (longer) backoff.
+  async _probe() {
+    this._breakerTimer = null;
+    this.log('Circuit breaker: probing mount…');
+    try {
+      await this.getPosition();
+    } catch (e) {
+      this.error('Circuit breaker probe failed', e);
+    }
+    // Safety net: if we're still open with no scheduled probe (e.g. the probe
+    // failed without a connect attempt), schedule the next one.
+    if (this._breakerOpen && !this._breakerTimer) {
+      this._openBreaker();
+    }
   }
 
   // Coalesces rapid slider changes into a single BLE write once the user stops
@@ -770,6 +869,10 @@ class MotionMountDevice extends Device {
     if (this._setPositionTimer) {
       clearTimeout(this._setPositionTimer);
       this._setPositionTimer = null;
+    }
+    if (this._breakerTimer) {
+      clearTimeout(this._breakerTimer);
+      this._breakerTimer = null;
     }
     this.log('MotionMountDevice has been deleted');
   }
