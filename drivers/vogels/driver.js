@@ -49,13 +49,15 @@ class MotionMountDriver extends Driver {
 
       const search = (query || '').toLowerCase();
 
+      // Map to the true device.presets index FIRST, then filter — otherwise the
+      // id would be the position in the filtered list and point at the wrong
+      // preset whenever a search term narrowed the list.
       return device.presets
-        .filter(preset => !search
-          || (preset.name && preset.name.toLowerCase().includes(search)))
         .map((preset, index) => ({
           id: String(index), // index in device.presets
           name: preset.name || `Preset ${index}`,
-        }));
+        }))
+        .filter(item => !search || item.name.toLowerCase().includes(search));
     });
 
     gotoPresetAction.registerRunListener(async (args, state) => {

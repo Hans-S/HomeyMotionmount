@@ -40,5 +40,9 @@
   "0.1.8": {
     "en": "Simpler, gentler Bluetooth: a failed operation no longer multiplies into several connect attempts, which is easier on both the mount and Homey. New optional 'Re-discover services on reconnect' device setting for extra robustness if needed.",
     "nl": "Eenvoudiger, rustiger Bluetooth: een mislukte actie leidt niet meer tot meerdere verbindingspogingen, wat prettiger is voor zowel de mount als Homey. Nieuwe optionele apparaatinstelling 'Services opnieuw ontdekken bij herverbinden' voor extra robuustheid indien nodig."
+  },
+  "0.1.9": {
+    "en": "Preset flow cards now target the correct preset (searching while selecting one could pick the wrong preset). Bluetooth stability: the app reuses a single connection instead of discarding and re-opening it (which could orphan the link), and now backs off correctly when the mount accepts a connection but stops responding.",
+    "nl": "Preset-flowkaarten kiezen nu de juiste preset (zoeken tijdens het selecteren kon de verkeerde preset kiezen). Bluetooth-stabiliteit: de app hergebruikt één verbinding in plaats van deze weg te gooien en opnieuw te openen (wat de verbinding kon laten hangen), en schakelt nu correct terug wanneer de mount een verbinding accepteert maar niet meer reageert."
   }
 }

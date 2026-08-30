@@ -49,11 +49,10 @@ class MotionMountDevice extends Device {
     this._timerId = null;
     this._pollEpoch = 0;
 
-    // BLE connection lifecycle counters, for leak diagnosis (0.1.4). A climbing
-    // fresh-connect count and resets while still connected point at orphaned
-    // connections accumulating on the mount and on Homey's BLE stack.
+    // Diagnostic: counts brand-new advertisement.connect() calls. With the
+    // handle now reused for the device's lifetime, this should stay at 1 — a
+    // climbing value would mean we're spawning (and orphaning) new connections.
     this._freshConnectCount = 0;
-    this._resetCount = 0;
 
     // Debounce timer for slider-driven position writes.
     this._setPositionTimer = null;
@@ -170,22 +169,12 @@ class MotionMountDevice extends Device {
     this._reconnectTimer = setTimeout(() => this.reconnect(), 30000);
   }
 
-  // Public connect: records reachability for the circuit breaker (a connect
-  // success means the mount is reachable; a failure counts toward tripping the
-  // breaker). The actual work is in _connect.
-  async connect() {
-    try {
-      await this._connect();
-      this._onBleReachable();
-    } catch (err) {
-      this._onBleUnreachable();
-      throw err;
-    }
-  }
-
   // Connect to the peripheral and make sure we have usable characteristics.
   // Throws on failure so callers can rely on the rejection to drive retries (#4).
-  async _connect() {
+  // Note: circuit-breaker reachability is recorded at the OPERATION level (a full
+  // read/write), not here — a connect that succeeds but whose read then times out
+  // must count as unreachable, otherwise the breaker never trips.
+  async connect() {
     if (!this.advertisement) {
       try {
         this.advertisement = await this._withTimeout(
@@ -234,11 +223,12 @@ class MotionMountDevice extends Device {
       try {
         await this._discoverCharacteristics();
       } catch (err) {
-        // Connected but couldn't discover. Release the link and drop the handle
-        // so we don't get stuck connected-but-undiscovered; next connect rebuilds.
+        // Connected but couldn't discover. Release the link and forget the
+        // (partial) characteristics so the next connect re-discovers — but keep
+        // the peripheral handle so we reconnect it rather than orphaning it.
         this.log(`Discovery failed, releasing connection: ${err}`);
         await this.disconnect();
-        this._resetConnection();
+        this._forgetCharacteristics();
         throw err;
       }
     }
@@ -337,24 +327,12 @@ class MotionMountDevice extends Device {
     return result;
   }
 
-  // Discards the current BLE handle and cached characteristics so the next
-  // connect() rebuilds from scratch (fresh connect + rediscovery). Used to
-  // self-heal when a disconnect/discovery fails and the peripheral may be
-  // wedged or half-open. this.presets (the loaded preset data) is kept.
-  _resetConnection() {
-    this._resetCount += 1;
-
-    // Diagnostics (0.1.4): if we discard a peripheral that Homey still thinks is
-    // connected, we're almost certainly orphaning a live BLE connection — which
-    // accumulates on the mount (single slot) and on Homey's BLE stack.
-    const wasConnected = !!(this.peripheral && this.peripheral.isConnected);
-    const state = this.peripheral ? this.peripheral.state : 'none';
-    this.log(`_resetConnection #${this._resetCount}: discarding handle (wasConnected=${wasConnected}, state=${state}, freshConnects so far=${this._freshConnectCount})`);
-    if (wasConnected) {
-      this.error('_resetConnection is discarding a STILL-CONNECTED peripheral — likely orphaning a BLE connection (leak suspect)');
-    }
-
-    this.peripheral = undefined;
+  // Forget the cached characteristic handles (so the next connect re-discovers
+  // them) WITHOUT discarding the peripheral. We deliberately keep the one
+  // peripheral object and reconnect it every time: discarding it while its
+  // connection is still tearing down orphaned the link and forced a brand-new
+  // advertisement.connect(), which piled up connections and wedged both radios.
+  _forgetCharacteristics() {
     this.service = undefined;
     this.extendPositionCharacteristic = undefined;
     this.turnPositionCharacteristic = undefined;
@@ -394,8 +372,11 @@ class MotionMountDevice extends Device {
         if (attempt === BLE_OP_ATTEMPTS) {
           break;
         }
+        // Clean up before retrying: disconnect and forget the characteristics
+        // (so the reconnect re-discovers), but keep the peripheral handle so we
+        // reconnect it instead of spawning a new connection.
         await this.disconnect();
-        this._resetConnection();
+        this._forgetCharacteristics();
         await this.sleep(500);
       }
     }
@@ -494,11 +475,11 @@ class MotionMountDevice extends Device {
     try {
       await this._withTimeout(this.peripheral.disconnect(), BLE_DISCONNECT_TIMEOUT_MS, 'BLE disconnect');
     } catch (error) {
-      // A hung/failed disconnect can leave the mount's single connection slot
-      // occupied. Drop the handle so the next connect() rebuilds cleanly instead
-      // of reusing a wedged peripheral (self-heal).
-      this.log(`Error disconnecting, discarding peripheral handle: ${error}`);
-      this._resetConnection();
+      // Disconnect timed out. Keep the peripheral handle anyway — discarding it
+      // here is what orphaned the still-open connection and forced a fresh
+      // connection next time. The next connect() reconnects this same handle
+      // (internalConnect waits out a lingering 'disconnecting' state).
+      this.log(`Error disconnecting (keeping handle to reconnect): ${error}`);
     }
   }
 
@@ -619,6 +600,7 @@ class MotionMountDevice extends Device {
 
     this.log('Going to preset', index, preset.name);
 
+    let ok = false;
     try {
       await this._runWithRetry(async () => {
         if (!this.moveCharacteristic) {
@@ -639,9 +621,15 @@ class MotionMountDevice extends Device {
       // Optimistically reflect the preset's position in the sliders and tiles.
       await this._publishExtend(this.extendPosition);
       await this._publishTurn(this.turnPosition);
+      ok = true;
     } catch (err) {
       this.error('Error writing preset move buffer after retries', err);
     } finally {
+      if (ok) {
+        this._onBleReachable();
+      } else {
+        this._onBleUnreachable();
+      }
       try {
         if (this.peripheral?.isConnected) {
           await this.disconnect();
@@ -671,6 +659,7 @@ class MotionMountDevice extends Device {
       this.turnPosition[1],
     ]);
 
+    let ok = false;
     try {
       this.log(newPosition);
 
@@ -686,12 +675,18 @@ class MotionMountDevice extends Device {
       // and tiles are correct immediately without waiting for the next poll.
       await this._publishExtend(this.extendPosition);
       await this._publishTurn(this.turnPosition);
+      ok = true;
     } catch (error) {
       this.error('Error in setPosition after retries:', error);
     } finally {
-    // Disconnect inside the locked operation instead of a detached 5s timer.
-    // The old setTimeout disconnect could fire mid-read during a poll, which is
-    // what produced the "Error: Not connected" in getPosition (#3).
+      if (ok) {
+        this._onBleReachable();
+      } else {
+        this._onBleUnreachable();
+      }
+      // Disconnect inside the locked operation instead of a detached 5s timer.
+      // The old setTimeout disconnect could fire mid-read during a poll, which is
+      // what produced the "Error: Not connected" in getPosition (#3).
       try {
         if (this.peripheral?.isConnected) {
           await this.disconnect();
@@ -727,6 +722,7 @@ class MotionMountDevice extends Device {
   }
 
   async _getPositionLocked() {
+    let ok = false;
     try {
       this.log('getPosition: Connecting...');
       await this.connect();
@@ -759,9 +755,19 @@ class MotionMountDevice extends Device {
       } else {
         this.log('turnPositionCharacteristic is null');
       }
+
+      ok = true;
     } catch (err) {
       this.error('Error reading position', err);
     } finally {
+      // Reachability is judged on whether we actually read the mount, not on the
+      // connect alone — a connect that succeeds but whose read times out is an
+      // unreachable-mount signal and must count toward the breaker.
+      if (ok) {
+        this._onBleReachable();
+      } else {
+        this._onBleUnreachable();
+      }
       try {
         if (this.peripheral?.isConnected) {
           this.log('Disconnecting...');
