@@ -1,5 +1,5 @@
 {
-  "type": "button",
+  "type": "boolean",
   "title": {
     "en": "Reconnect",
     "nl": "Opnieuw verbinden"

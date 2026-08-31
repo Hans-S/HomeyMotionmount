@@ -48,5 +48,9 @@
   "0.2.0": {
     "en": "Major simplification for stability. The app now only moves the mount to your saved presets, from the preset tile or a flow. Manual extend/turn sliders, the position tiles and background polling are removed — the mount is only contacted when you trigger a preset. Added a 'Reconnect' button that re-loads the presets if the mount couldn't be reached at setup.",
     "nl": "Grote vereenvoudiging voor stabiliteit. De app zet de mount nu alleen naar je opgeslagen presets, via de preset-tegel of een flow. De handmatige uitschuif-/draaischuiven, de positietegels en de achtergrond-polling zijn verwijderd — de mount wordt alleen benaderd wanneer je een preset activeert. Een nieuwe 'Opnieuw verbinden'-knop laadt de presets opnieuw als de mount bij het instellen niet bereikbaar was."
+  },
+  "0.2.1": {
+    "en": "Major simplification for stability. The app now only moves the mount to your saved presets, from the preset tile or a flow. Manual extend/turn sliders, the position tiles and background polling are removed — the mount is only contacted when you trigger a preset. Added a 'Reconnect' button that re-loads the presets if the mount couldn't be reached at setup.",
+    "nl": "Grote vereenvoudiging voor stabiliteit. De app zet de mount nu alleen naar je opgeslagen presets, via de preset-tegel of een flow. De handmatige uitschuif-/draaischuiven, de positietegels en de achtergrond-polling zijn verwijderd — de mount wordt alleen benaderd wanneer je een preset activeert. Een nieuwe 'Opnieuw verbinden'-knop laadt de presets opnieuw als de mount bij het instellen niet bereikbaar was."
   }
 }
