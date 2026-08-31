@@ -5,7 +5,7 @@
   },
   "class": "tv",
   "capabilities": [
-    "current_extend", "current_turn", "set_extend", "set_turn", "preset"
+    "preset", "retry_setup"
   ],
   "platforms": [
     "local"

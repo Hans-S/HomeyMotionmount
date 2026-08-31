@@ -2,905 +2,212 @@
 
 const { Device } = require('homey');
 
-// Debounce window for slider changes, so dragging a slider results in a single
-// BLE write at the end instead of one write per intermediate value.
-const SET_POSITION_DEBOUNCE_MS = 500;
+const SERVICE_UUID = '3e6fe65ded7811e4895e00026fd5c52c';
+const MOVE_CHARACTERISTIC_UUID = 'c005fa2106514800b000000000000000';
 
-// Upper bound on a BLE scan/find (only runs on the first connect, and scanning
-// can genuinely take a few seconds).
-const BLE_FIND_TIMEOUT_MS = 12000;
+// One timeout per connect attempt: increasing, and the number of entries is the
+// attempt limit. A failed connect walks down the list, then gives up.
+const CONNECT_TIMEOUTS_MS = [6000, 12000, 20000];
 
-// Upper bound on a single connect. A healthy connect completes in well under a
-// second, so keep this short: fail fast rather than tying up Homey's BLE stack
-// for 15s per attempt against an unresponsive mount. The circuit breaker
-// provides the "wait much longer before trying again" instead.
-const BLE_CONNECT_TIMEOUT_MS = 6000;
-
-// Upper bound on a single characteristic read/write (a healthy one is ~2s).
-const BLE_READ_TIMEOUT_MS = 5000;
-
-// Upper bound on a disconnect.
-const BLE_DISCONNECT_TIMEOUT_MS = 4000;
-
-// How many times to (re)connect and retry a single command before giving up.
-const BLE_OP_ATTEMPTS = 2;
-
-// Circuit breaker: after this many consecutive failures to reach the mount, stop
-// polling/hammering and back off for a growing delay. Relentless failed connects
-// are what wedge Homey's own BLE stack (needing a Homey restart); backing off
-// keeps it healthy so a mount power-cycle alone recovers. Backoff grows through
-// the list (minutes) and holds at the last value.
-const BREAKER_THRESHOLD = 3;
-const BREAKER_BACKOFF_MINUTES = [1, 5, 15, 30];
+// Fixed timeout for the find and for every GATT call (discover/read/write/disconnect).
+const BLE_TIMEOUT_MS = 8000;
 
 class MotionMountDevice extends Device {
 
   async onInit() {
-    this.advertisement = undefined;
-    this.peripheral = undefined;
-    this.presetCharacteristics = [];
     this.presets = [];
+    // Serializes BLE access so two operations never overlap on the mount.
+    this._chain = Promise.resolve();
 
-    // Serializes all BLE access so commands and polling can never run
-    // concurrently on the same peripheral (#3).
-    this._bleLock = Promise.resolve();
-
-    // Polling loop bookkeeping (#2).
-    this._timerId = null;
-    this._pollEpoch = 0;
-
-    // Diagnostic: counts brand-new advertisement.connect() calls. With the
-    // handle now reused for the device's lifetime, this should stay at 1 — a
-    // climbing value would mean we're spawning (and orphaning) new connections.
-    this._freshConnectCount = 0;
-
-    // Debounce timer for slider-driven position writes.
-    this._setPositionTimer = null;
-
-    // Circuit breaker state: consecutive reachability failures, current backoff
-    // step, the pending probe timer, and whether the breaker is currently open.
-    this._consecutiveFailures = 0;
-    this._breakerBackoffIndex = 0;
-    this._breakerTimer = null;
-    this._breakerOpen = false;
-
-    // Startup reconnect-retry timer, and a flag so timers that fire after the
-    // device is deleted bail out instead of calling setUnavailable() on a device
-    // that no longer exists (which rejects with "Not Found" and crashed the app).
-    this._reconnectTimer = null;
-    this._destroyed = false;
-
-    // Register all capability listeners once, here in onInit. Doing this in
-    // initialize() meant a later reconnect() -> initialize() re-registered them,
-    // which the SDK rejects (#2).
     if (this.hasCapability('preset')) {
-      this.registerCapabilityListener('preset', async value => {
-        return this.onCapabilityPreset(value);
-      });
-    } else {
-      this.error('No preset capability present, this should not happen');
+      this.registerCapabilityListener('preset', value => this.onPreset(value));
+    }
+    if (this.hasCapability('retry_setup')) {
+      this.registerCapabilityListener('retry_setup', () => this.setup());
     }
 
-    this.registerCapabilityListener('set_extend', async value => {
-      if (value >= 0 && value <= 100) {
-        this.extendPosition = Buffer.from([0x00, value]);
-        this._scheduleSetPosition();
-        return;
-      }
-      this.log(`Invalid extend position ${value}. Must be between 0 and 100`);
-    });
+    // Clear any stale "unavailable" state left by older versions of the app.
+    this.setAvailable().catch(() => {});
 
-    this.registerCapabilityListener('set_turn', async value => {
-      if (value >= -100 && value <= 100) {
-        if (value < 0) {
-          this.turnPosition = Buffer.from([0xff, 255 + value]);
-        } else {
-          this.turnPosition = Buffer.from([0x00, value]);
-        }
-        this._scheduleSetPosition();
-        return;
-      }
-      this.log(`Invalid turn position ${value}. Must be between -100 and 100`);
-    });
+    this.setup();
+  }
 
-    this.setUnavailable('Awaiting initial connect').catch(() => {});
-
+  // Connect once, read the presets, and fill the preset picker. Runs at startup
+  // and whenever the "Reconnect" button is pressed. On failure it sets a warning
+  // (rather than going unavailable) so the button stays pressable.
+  async setup() {
     try {
-      await this.connect();
-      await this.loadPresets();
-      await this.updatePresetCapabilityOptions();
-      this.setAvailable().catch(() => {});
-      // initialize() reads the initial position: immediately via _startPolling()
-      // when polling is on, or once directly when it's off.
-      this.initialize();
-      this.log('MotionMountDevice has been initialized');
-    } catch (error) {
-      this.error(`Error in initial connect: ${error}`);
-      this.setUnavailable(`Initial connection to device failed: ${error}`).catch(() => {});
-      this._scheduleReconnect();
-    }
-  }
-
-  async initialize() {
-    // polling_interval is configured in seconds (see driver.settings.compose.json).
-    // This used to multiply by 60000 here while onSettings used 1000, so the
-    // interval changed by 60x the first time settings were touched (#1).
-    this._pollingInterval = this.getSettings().polling_interval * 1000;
-
-    if (this.getSettings().polling === true) {
-      this.log(`Polling enabled every ${this._pollingInterval / 1000}s, initial position check`);
-      this._startPolling();
-    } else {
-      this._stopPolling();
-      // With polling off, nothing else refreshes the position, so read it once
-      // here to seed the sliders and tiles. After this they only update when the
-      // mount is moved from within the app (optimistic updates in setPosition /
-      // gotoPreset). External changes won't be reflected until polling is on.
-      await this.getPosition();
-      this.log('Device initialize phase two complete, polling disabled');
-    }
-  }
-
-  async reconnect() {
-    // This is used if initial connection fails as a retry mechanism.
-    if (this._destroyed) {
-      return;
-    }
-    try {
-      await this.connect();
-      this.setAvailable().catch(() => {});
-      this.initialize();
-    } catch (error) {
-      this.error(`Error on reconnect: ${error}`);
-      this.setUnavailable(`Reconnect to device failed: ${error}`).catch(() => {});
-      this._scheduleReconnect();
-    }
-  }
-
-  // Schedules a single startup reconnect attempt, tracking the timer so it can be
-  // cancelled on delete (a stray reconnect after deletion crashed the app).
-  _scheduleReconnect() {
-    if (this._destroyed) {
-      return;
-    }
-    if (this._reconnectTimer) {
-      clearTimeout(this._reconnectTimer);
-    }
-    this._reconnectTimer = setTimeout(() => this.reconnect(), 30000);
-  }
-
-  // Connect to the peripheral and make sure we have usable characteristics.
-  // Throws on failure so callers can rely on the rejection to drive retries (#4).
-  // Note: circuit-breaker reachability is recorded at the OPERATION level (a full
-  // read/write), not here — a connect that succeeds but whose read then times out
-  // must count as unreachable, otherwise the breaker never trips.
-  async connect() {
-    if (!this.advertisement) {
-      try {
-        this.advertisement = await this._withTimeout(
-          this.homey.ble.find(this.getStore().peripheralUuid),
-          BLE_FIND_TIMEOUT_MS,
-          'BLE find',
-        );
-        this.log('Peripheral found');
-      } catch (error) {
-        this.log(`BLE find error: ${error}`);
-        throw error;
-      }
-    }
-
-    const isFreshPeripheral = !this.peripheral;
-
-    if (isFreshPeripheral) {
-      this.log('Initial connect');
-      await this.internalConnect();
-      if (!this.peripheral.isConnected) {
-        throw new Error('Could not make initial BLE connection');
-      }
-      // Attach the disconnect log listener once per peripheral object.
-      this.peripheral.on('disconnect', () => {
-        this.log(`disconnected: ${this.getName()}`);
-      });
-    } else {
-      this.log(`Peripheral known, isConnected: ${this.peripheral.isConnected}, state: ${this.peripheral.state}`);
-      if (!this.peripheral.isConnected) {
-        this.log('Peripheral already known, connecting...');
-        await this.internalConnect();
-      } else {
-        this.log('Already connected');
-      }
-    }
-
-    // Discover characteristics on the first connect always. On a reconnect we
-    // reuse the cached handles by default, but re-discover when the setting is on
-    // (fixes intermittent could_not_find_characteristic at the cost of a little
-    // extra GATT traffic per cycle), or whenever the cache is missing (#3).
-    const needDiscover = isFreshPeripheral
-      || !this.moveCharacteristic
-      || this.getSettings().rediscover_characteristics === true;
-
-    if (needDiscover) {
-      try {
-        await this._discoverCharacteristics();
-      } catch (err) {
-        // Connected but couldn't discover. Release the link and forget the
-        // (partial) characteristics so the next connect re-discovers — but keep
-        // the peripheral handle so we reconnect it rather than orphaning it.
-        this.log(`Discovery failed, releasing connection: ${err}`);
-        await this.disconnect();
-        this._forgetCharacteristics();
-        throw err;
-      }
-    }
-  }
-
-  // Reads the mount's GATT table and (re)populates the characteristic handles.
-  // Clears the cache first so a re-discovery never accumulates duplicate slots.
-  async _discoverCharacteristics() {
-    this.extendPositionCharacteristic = undefined;
-    this.turnPositionCharacteristic = undefined;
-    this.moveCharacteristic = undefined;
-    this.presetCharacteristics = [];
-
-    this.service = await this._withTimeout(
-      this.peripheral.getService('3e6fe65ded7811e4895e00026fd5c52c'),
-      BLE_CONNECT_TIMEOUT_MS,
-      'BLE getService',
-    );
-
-    const characteristics = await this._withTimeout(
-      this.service.discoverCharacteristics(),
-      BLE_CONNECT_TIMEOUT_MS,
-      'BLE discoverCharacteristics',
-    );
-
-    characteristics.forEach(characteristic => {
-      if (characteristic.uuid === 'c005fa0006514800b000000000000000') {
-        this.extendPositionCharacteristic = characteristic;
-      } else if (characteristic.uuid === 'c005fa0106514800b000000000000000') {
-        this.turnPositionCharacteristic = characteristic;
-      } else if (characteristic.uuid === 'c005fa2106514800b000000000000000') {
-        this.moveCharacteristic = characteristic;
-      }
-
-      // Store preset slot characteristics (0x0a..0x13)
-      if (characteristic.uuid.startsWith('c005fa')) {
-        const byteVal = parseInt(characteristic.uuid.substring(6, 8), 16);
-
-        if (byteVal >= 0x0a && byteVal <= 0x13) {
-          this.presetCharacteristics.push(characteristic);
-        }
-      }
-    });
-  }
-
-  // A single connect attempt. Retries are handled at a higher level
-  // (_runWithRetry for commands, and the circuit breaker for everything), so
-  // this deliberately does NOT loop — one failure no longer multiplies into
-  // several connect/disconnect cycles that churn the fragile radios (#1).
-  async internalConnect() {
-    // Wait until any previous disconnect has finished before reconnecting.
-    if (this.peripheral && this.peripheral.state === 'disconnecting') {
-      this.log('waiting for disconnect to finish');
-      await this.sleep(1000);
-    }
-
-    try {
-      if (!this.peripheral) {
-        this._freshConnectCount += 1;
-        this.log(`Fresh advertisement.connect() (new peripheral) #${this._freshConnectCount}`);
-        this.peripheral = await this._withTimeout(this.advertisement.connect(), BLE_CONNECT_TIMEOUT_MS, 'BLE connect');
-      } else {
-        await this._withTimeout(this.peripheral.connect(), BLE_CONNECT_TIMEOUT_MS, 'BLE connect');
-      }
-
-      if (!this.peripheral.isConnected) {
-        throw new Error('connect returned but not connected');
-      }
-      this.log('BLE connected');
+      await this._exclusive(() => this._withConnection(async peripheral => {
+        this.presets = await this._readPresets(peripheral);
+      }));
+      await this._updatePresetOptions();
+      await this.unsetWarning().catch(() => {});
+      this.log('Setup complete. Presets:', this.presets.map(p => p.name).join(', '));
     } catch (err) {
-      this.log('connect failed:', err.message);
-      // Release the half-open link before giving up.
-      if (this.peripheral) {
-        try {
-          await this._withTimeout(this.peripheral.disconnect(), BLE_DISCONNECT_TIMEOUT_MS, 'BLE disconnect');
-        } catch (e) {
-          // ignore: we're already handling a failed connect
-        }
-      }
-      throw err;
+      this.error('Setup failed:', err);
+      await this.setWarning('Could not connect to the MotionMount. Press "Reconnect" to try again.').catch(() => {});
     }
   }
 
-  sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+  // Preset picker (UI): move, then reset to the neutral entry so selecting the
+  // same preset again fires another move.
+  async onPreset(value) {
+    if (value === 'none') {
+      return;
+    }
+    await this.gotoPreset(Number(value));
+    await this.setCapabilityValue('preset', 'none').catch(() => {});
   }
 
-  // Runs fn after any in-flight BLE operation has finished, so reads (polling)
-  // and writes (commands) never overlap on the peripheral (#3). Every individual
-  // BLE call is time-bounded (find/connect/io/disconnect), so a locked op can't
-  // hang the mutex — no overall watchdog needed.
-  _runExclusive(fn) {
-    const result = this._bleLock.then(() => fn());
-    // Keep the chain alive even if this operation rejected.
-    this._bleLock = result.then(() => {}, () => {});
+  // Flow card: goto_preset.
+  async onGotoPreset(index) {
+    await this.gotoPreset(index);
+  }
+
+  async gotoPreset(index) {
+    const preset = this.presets[index];
+    if (!preset) {
+      this.log('Unknown preset index', index);
+      return;
+    }
+    this.log('Going to preset', index, preset.name);
+    await this._exclusive(() => this._withConnection(async peripheral => {
+      const move = await this._getCharacteristic(peripheral, MOVE_CHARACTERISTIC_UUID);
+      await this._withTimeout(move.write(preset.moveBuffer), BLE_TIMEOUT_MS, 'preset write');
+    }));
+  }
+
+  // --- BLE helpers ---
+
+  // Runs fn after any in-flight BLE operation has finished.
+  _exclusive(fn) {
+    const result = this._chain.then(fn);
+    this._chain = result.catch(() => {});
     return result;
   }
 
-  // Forget the cached characteristic handles (so the next connect re-discovers
-  // them) WITHOUT discarding the peripheral. We deliberately keep the one
-  // peripheral object and reconnect it every time: discarding it while its
-  // connection is still tearing down orphaned the link and forced a brand-new
-  // advertisement.connect(), which piled up connections and wedged both radios.
-  _forgetCharacteristics() {
-    this.service = undefined;
-    this.extendPositionCharacteristic = undefined;
-    this.turnPositionCharacteristic = undefined;
-    this.moveCharacteristic = undefined;
-    this.presetCharacteristics = [];
-  }
-
-  // Rejects if the wrapped promise doesn't settle within ms, so a hung BLE call
-  // can't stall onInit / reconnect / the command queue forever.
+  // Rejects if a BLE call doesn't settle within ms.
   _withTimeout(promise, ms, label) {
     let timer;
     const timeout = new Promise((resolve, reject) => {
       timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
     });
-    // If the original settles after we've already timed out, swallow its result
-    // so a late rejection doesn't surface as an unhandled promise rejection.
-    promise.catch(() => {});
+    promise.catch(() => {}); // swallow a late rejection after we've timed out
     return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
   }
 
-  // Ensures a connection and runs a characteristic operation, retrying on
-  // failure. Between attempts it closes the (possibly dead or half-open) link
-  // cleanly and discards the handle, so the next attempt reconnects fresh and
-  // re-discovers characteristics. This recovers from the mount dropping the
-  // connection right after connect (write/read timeout) and from stale cached
-  // handles (could_not_find_characteristic). Disconnecting before discarding
-  // avoids orphaning a live connection.
-  async _runWithRetry(operation, label) {
+  // Find + connect (retrying with increasing timeouts), run fn(peripheral), then
+  // always disconnect. A new peripheral is used per attempt and the failed one is
+  // disconnected before the next try, so nothing is left hanging.
+  async _withConnection(fn) {
+    const advertisement = await this._withTimeout(
+      this.homey.ble.find(this.getStore().peripheralUuid), BLE_TIMEOUT_MS, 'find',
+    );
+
+    let peripheral;
     let lastErr;
-    for (let attempt = 1; attempt <= BLE_OP_ATTEMPTS; attempt++) {
+    for (const timeout of CONNECT_TIMEOUTS_MS) {
       try {
-        await this.connect();
-        return await operation();
+        peripheral = await this._withTimeout(advertisement.connect(), timeout, 'connect');
+        if (!peripheral.isConnected) {
+          throw new Error('connect returned but not connected');
+        }
+        break;
       } catch (err) {
         lastErr = err;
-        this.log(`${label}: attempt ${attempt}/${BLE_OP_ATTEMPTS} failed: ${err.message}`);
-        if (attempt === BLE_OP_ATTEMPTS) {
-          break;
+        this.log(`Connect failed (timeout ${timeout}ms): ${err.message}`);
+        if (peripheral) {
+          try {
+            await this._withTimeout(peripheral.disconnect(), BLE_TIMEOUT_MS, 'disconnect');
+          } catch (e) { /* ignore, we're already failing */ }
+          peripheral = undefined;
         }
-        // Clean up before retrying: disconnect and forget the characteristics
-        // (so the reconnect re-discovers), but keep the peripheral handle so we
-        // reconnect it instead of spawning a new connection.
-        await this.disconnect();
-        this._forgetCharacteristics();
-        await this.sleep(500);
       }
     }
-    throw lastErr;
-  }
-
-  // --- Circuit breaker ---------------------------------------------------
-  // The mount occasionally wedges its BLE radio (refusing all connections until
-  // power-cycled). When that happens, relentlessly retrying wedges Homey's BLE
-  // stack too. The breaker notices repeated unreachability, stops polling, and
-  // backs off for a growing delay, probing occasionally, so Homey stays healthy
-  // and recovers on its own once the mount is power-cycled.
-
-  // A connect succeeded: clear the failure streak and, if the breaker was open,
-  // close it and resume normal polling.
-  _onBleReachable() {
-    const wasOpen = this._breakerOpen;
-    this._consecutiveFailures = 0;
-    this._breakerBackoffIndex = 0;
-    if (this._breakerTimer) {
-      clearTimeout(this._breakerTimer);
-      this._breakerTimer = null;
+    if (!peripheral) {
+      throw lastErr || new Error('could not connect');
     }
-    if (wasOpen) {
-      this._breakerOpen = false;
-      this.log('Circuit breaker CLOSED: mount reachable again');
-      this.setAvailable().catch(() => {});
-      if (this.getSettings().polling === true) {
-        this._startPolling();
-      }
-    }
-  }
 
-  // A connect failed: count it and trip the breaker once we cross the threshold.
-  _onBleUnreachable() {
-    this._consecutiveFailures += 1;
-    this.log(`Circuit breaker: reachability failure ${this._consecutiveFailures}/${BREAKER_THRESHOLD}`);
-    if (this._consecutiveFailures >= BREAKER_THRESHOLD) {
-      this._openBreaker();
-    }
-  }
-
-  // Stop polling and schedule a single probe after a growing backoff.
-  _openBreaker() {
-    this._breakerOpen = true;
-    this._stopPolling();
-
-    const idx = Math.min(this._breakerBackoffIndex, BREAKER_BACKOFF_MINUTES.length - 1);
-    const minutes = BREAKER_BACKOFF_MINUTES[idx];
-    this._breakerBackoffIndex += 1;
-
-    this.log(`Circuit breaker OPEN: ${this._consecutiveFailures} failures, backing off ${minutes} min`);
-    this.setUnavailable(`Mount unreachable — retrying in ${minutes} min`).catch(() => {});
-
-    if (this._breakerTimer) {
-      clearTimeout(this._breakerTimer);
-    }
-    this._breakerTimer = setTimeout(() => this._probe(), minutes * 60000);
-  }
-
-  // One probe attempt while the breaker is open. getPosition records the outcome
-  // via connect(): success closes the breaker (and resumes polling), failure
-  // re-opens it with the next (longer) backoff.
-  async _probe() {
-    this._breakerTimer = null;
-    this.log('Circuit breaker: probing mount…');
     try {
-      await this.getPosition();
-    } catch (e) {
-      this.error('Circuit breaker probe failed', e);
-    }
-    // Safety net: if we're still open with no scheduled probe (e.g. the probe
-    // failed without a connect attempt), schedule the next one.
-    if (this._breakerOpen && !this._breakerTimer) {
-      this._openBreaker();
-    }
-  }
-
-  // Coalesces rapid slider changes into a single BLE write once the user stops
-  // moving the slider for SET_POSITION_DEBOUNCE_MS.
-  _scheduleSetPosition() {
-    if (this._setPositionTimer) {
-      clearTimeout(this._setPositionTimer);
-    }
-    this._setPositionTimer = setTimeout(() => {
-      this._setPositionTimer = null;
-      this.setPosition().catch(err => this.error('Debounced setPosition failed', err));
-    }, SET_POSITION_DEBOUNCE_MS);
-  }
-
-  async disconnect() {
-    if (!this.peripheral) {
-      this.log('Not disconnecting, no peripheral to disconnect');
-      return;
-    }
-    try {
-      await this._withTimeout(this.peripheral.disconnect(), BLE_DISCONNECT_TIMEOUT_MS, 'BLE disconnect');
-    } catch (error) {
-      // Disconnect timed out. Keep the peripheral handle anyway — discarding it
-      // here is what orphaned the still-open connection and forced a fresh
-      // connection next time. The next connect() reconnects this same handle
-      // (internalConnect waits out a lingering 'disconnecting' state).
-      this.log(`Error disconnecting (keeping handle to reconnect): ${error}`);
-    }
-  }
-
-  async loadPresets() {
-    return this._runExclusive(() => this._loadPresetsLocked());
-  }
-
-  async _loadPresetsLocked() {
-    this.log('Loading presets from MotionMount…');
-
-    await this.connect();
-
-    const presets = [];
-
-    for (const characteristic of this.presetCharacteristics) {
-      const { uuid } = characteristic;
-
-      if (!this.peripheral || !this.peripheral.isConnected) {
-        this.log('loadPresets: peripheral not connected, reconnecting...');
-        await this.connect();
-      }
-
-      let buf;
-
+      return await fn(peripheral);
+    } finally {
       try {
-        buf = await this._withTimeout(characteristic.read(), BLE_READ_TIMEOUT_MS, 'Preset read');
-      } catch (err) {
-        this.log('Error reading preset characteristic', uuid, err);
+        await this._withTimeout(peripheral.disconnect(), BLE_TIMEOUT_MS, 'disconnect');
+      } catch (e) {
+        this.log('Disconnect failed:', e.message);
+      }
+    }
+  }
+
+  async _discover(peripheral) {
+    const service = await this._withTimeout(peripheral.getService(SERVICE_UUID), BLE_TIMEOUT_MS, 'getService');
+    return this._withTimeout(service.discoverCharacteristics(), BLE_TIMEOUT_MS, 'discoverCharacteristics');
+  }
+
+  async _getCharacteristic(peripheral, uuid) {
+    const characteristic = (await this._discover(peripheral)).find(c => c.uuid === uuid);
+    if (!characteristic) {
+      throw new Error(`characteristic ${uuid} not found`);
+    }
+    return characteristic;
+  }
+
+  // Reads the preset slots (0x0a..0x13). Each valid slot starts with 0x01, then
+  // a 4-byte move buffer, then a null-terminated name.
+  async _readPresets(peripheral) {
+    const presets = [];
+    for (const characteristic of await this._discover(peripheral)) {
+      if (!characteristic.uuid.startsWith('c005fa')) {
+        continue;
+      }
+      const slot = parseInt(characteristic.uuid.substring(6, 8), 16);
+      if (slot < 0x0a || slot > 0x13) {
         continue;
       }
 
-      // Check if we have a valid preset. Valid presets start with 0x01
+      let buf;
+      try {
+        buf = await this._withTimeout(characteristic.read(), BLE_TIMEOUT_MS, 'preset read');
+      } catch (e) {
+        this.log('Preset read failed', characteristic.uuid, e.message);
+        continue;
+      }
       if (!buf || buf.length < 6 || buf[0] !== 0x01) {
         continue;
       }
 
-      const moveBuffer = buf.slice(1, 5);
-
-      // name from bytes [6..] until 0x00
       let name = '';
       for (let i = 5; i < buf.length; i++) {
-        const b = buf[i];
-        if (b === 0x00) break;
-        name += String.fromCharCode(b);
-      }
-      if (!name) {
-        name = `Preset ${presets.length}`;
+        if (buf[i] === 0x00) {
+          break;
+        }
+        name += String.fromCharCode(buf[i]);
       }
 
       presets.push({
-        name,
-        moveBuffer,
-        uuid,
+        name: name || `Preset ${presets.length}`,
+        moveBuffer: buf.slice(1, 5),
       });
     }
-
-    this.presets = presets;
-    this.log('Presets loaded:', this.presets.map(p => p.name).join(', '));
+    return presets;
   }
 
-  async updatePresetCapabilityOptions() {
+  async _updatePresetOptions() {
     if (!this.hasCapability('preset')) {
-      this.log('updatePresetCapabilityOptions: No preset capability!');
       return;
     }
-
-    // The picker is a momentary action list: it always sits on the neutral
-    // "Select preset…" entry when idle, and is reset back to it after each
-    // selection (see onCapabilityPreset). That way selecting any preset — even
-    // the one shown last time — always registers as a change and fires a move.
-    // The app can't reliably know which preset the mount is physically on, so
-    // the picker doesn't try to display it; the position tiles/sliders do.
     const values = [
       { id: 'none', title: { en: 'Select preset…', nl: 'Kies preset…' } },
       ...this.presets.map((preset, index) => ({
         id: String(index),
-        title: {
-          en: preset.name,
-          nl: preset.name,
-        },
+        title: { en: preset.name, nl: preset.name },
       })),
     ];
-
     await this.setCapabilityOptions('preset', { values });
-    await this.setCapabilityValue('preset', 'none').catch(err => this.error('Failed to reset preset picker', err));
+    await this.setCapabilityValue('preset', 'none').catch(() => {});
   }
 
-  async onCapabilityPreset(value) {
-    // The neutral entry is not an action.
-    if (value === 'none') {
-      return;
-    }
-
-    const index = Number(value);
-    this.log('Preset capability changed to index', index);
-
-    if (Number.isNaN(index) || index < 0 || index >= this.presets.length) {
-      this.log('Invalid preset index', value);
-      return;
-    }
-
-    await this.gotoPreset(index);
-
-    // Reset to the neutral entry so re-selecting the same preset fires again.
-    await this.setCapabilityValue('preset', 'none').catch(err => this.error('Failed to reset preset picker', err));
-  }
-
-  async gotoPreset(index) {
-    return this._runExclusive(() => this._gotoPresetLocked(index));
-  }
-
-  async _gotoPresetLocked(index) {
-    const preset = this.presets[index];
-    if (!preset) {
-      this.log('Preset not found for index', index);
-      return;
-    }
-
-    this.log('Going to preset', index, preset.name);
-
-    let ok = false;
-    try {
-      await this._runWithRetry(async () => {
-        if (!this.moveCharacteristic) {
-          // Not discovered on this connection; throwing makes _runWithRetry
-          // reconnect fresh and re-discover before the next attempt.
-          throw new Error('moveCharacteristic not found');
-        }
-        // moveBuffer = 4 bytes [extendMSB, extendLSB, turnMSB, turnLSB]
-        await this._withTimeout(this.moveCharacteristic.write(preset.moveBuffer), BLE_READ_TIMEOUT_MS, 'Preset write');
-      }, 'gotoPreset');
-
-      // Keep the position cache in sync with the preset we just moved to, so a
-      // later single-axis slider change doesn't re-send a stale value for the
-      // other axis and move it back. See setPosition (#1).
-      this.extendPosition = Buffer.from([preset.moveBuffer[0], preset.moveBuffer[1]]);
-      this.turnPosition = Buffer.from([preset.moveBuffer[2], preset.moveBuffer[3]]);
-
-      // Optimistically reflect the preset's position in the sliders and tiles.
-      await this._publishExtend(this.extendPosition);
-      await this._publishTurn(this.turnPosition);
-      ok = true;
-    } catch (err) {
-      this.error('Error writing preset move buffer after retries', err);
-    } finally {
-      if (ok) {
-        this._onBleReachable();
-      } else {
-        this._onBleUnreachable();
-      }
-      try {
-        if (this.peripheral?.isConnected) {
-          await this.disconnect();
-        }
-      } catch (e) {
-        this.error('Disconnect after preset move failed', e);
-      }
-    }
-  }
-
-  async setPosition() {
-    return this._runExclusive(() => this._setPositionLocked());
-  }
-
-  async _setPositionLocked() {
-    this.log('setPosition entry');
-
-    if (!this.extendPosition || !this.turnPosition) {
-      this.log('setPosition: extend/turn position not initialised yet, skipping');
-      return;
-    }
-
-    const newPosition = Buffer.from([
-      this.extendPosition[0],
-      this.extendPosition[1],
-      this.turnPosition[0],
-      this.turnPosition[1],
-    ]);
-
-    let ok = false;
-    try {
-      this.log(newPosition);
-
-      await this._runWithRetry(async () => {
-        if (!this.moveCharacteristic) {
-          throw new Error('moveCharacteristic not found');
-        }
-        this.log('setPosition: Writing new position');
-        await this._withTimeout(this.moveCharacteristic.write(newPosition), BLE_READ_TIMEOUT_MS, 'Position write');
-      }, 'setPosition');
-
-      // Optimistically reflect the position we just commanded, so the sliders
-      // and tiles are correct immediately without waiting for the next poll.
-      await this._publishExtend(this.extendPosition);
-      await this._publishTurn(this.turnPosition);
-      ok = true;
-    } catch (error) {
-      this.error('Error in setPosition after retries:', error);
-    } finally {
-      if (ok) {
-        this._onBleReachable();
-      } else {
-        this._onBleUnreachable();
-      }
-      // Disconnect inside the locked operation instead of a detached 5s timer.
-      // The old setTimeout disconnect could fire mid-read during a poll, which is
-      // what produced the "Error: Not connected" in getPosition (#3).
-      try {
-        if (this.peripheral?.isConnected) {
-          await this.disconnect();
-        }
-      } catch (e) {
-        this.error('Error disconnecting after setPosition:', e);
-      }
-    }
-  }
-
-  // Pushes an extend buffer ([0x00, value]) to the slider + info tiles. Used
-  // both after a poll read and to optimistically reflect an app-issued move.
-  async _publishExtend(buf) {
-    const extendInt = parseInt(buf.toString('hex'), 16);
-    await this.setCapabilityValue('set_extend', extendInt).catch(err => this.error('set_extend failed', err));
-    // current_* shows a readable decimal rather than the raw hex buffer
-    await this.setCapabilityValue('current_extend', String(extendInt)).catch(err => this.error('current_extend failed', err));
-  }
-
-  // Pushes a turn buffer to the slider + info tiles. The mount encodes negative
-  // turn as 0xffXX, which decodes back to a signed -100..100 value.
-  async _publishTurn(buf) {
-    let turnInt = parseInt(buf.toString('hex'), 16);
-    if (turnInt > 100) {
-      turnInt = (65535 - turnInt) * -1;
-    }
-    await this.setCapabilityValue('set_turn', turnInt).catch(err => this.error('set_turn failed', err));
-    await this.setCapabilityValue('current_turn', String(turnInt)).catch(err => this.error('current_turn failed', err));
-  }
-
-  async getPosition() {
-    return this._runExclusive(() => this._getPositionLocked());
-  }
-
-  async _getPositionLocked() {
-    let ok = false;
-    try {
-      this.log('getPosition: Connecting...');
-      await this.connect();
-
-      if (!this.peripheral?.isConnected) {
-        this.log('Cannot read position, connection failed');
-        return;
-      }
-
-      this.log('Connected');
-
-      // ----- EXTEND -----
-
-      if (this.extendPositionCharacteristic) {
-        const buf = await this._withTimeout(this.extendPositionCharacteristic.read(), BLE_READ_TIMEOUT_MS, 'Extend read');
-        this.log('Extend position:', buf);
-        this.extendPosition = buf;
-        await this._publishExtend(buf);
-      } else {
-        this.log('extendPositionCharacteristic is null');
-      }
-
-      // ----- TURN -----
-
-      if (this.turnPositionCharacteristic) {
-        const buf = await this._withTimeout(this.turnPositionCharacteristic.read(), BLE_READ_TIMEOUT_MS, 'Turn read');
-        this.log('Turn position:', buf);
-        this.turnPosition = buf;
-        await this._publishTurn(buf);
-      } else {
-        this.log('turnPositionCharacteristic is null');
-      }
-
-      ok = true;
-    } catch (err) {
-      this.error('Error reading position', err);
-    } finally {
-      // Reachability is judged on whether we actually read the mount, not on the
-      // connect alone — a connect that succeeds but whose read times out is an
-      // unreachable-mount signal and must count toward the breaker.
-      if (ok) {
-        this._onBleReachable();
-      } else {
-        this._onBleUnreachable();
-      }
-      try {
-        if (this.peripheral?.isConnected) {
-          this.log('Disconnecting...');
-          await this.disconnect();
-        }
-      } catch (e) {
-        this.error('Disconnect failed', e);
-      }
-    }
-  }
-
-  _startPolling() {
-    this._stopPolling();
-    const epoch = ++this._pollEpoch;
-
-    const loop = async () => {
-      if (epoch !== this._pollEpoch) return;
-      try {
-        await this.getPosition();
-      } catch (err) {
-        // Never let a failed poll stop the loop (e.g. the hard-cap watchdog).
-        this.error('Poll failed', err);
-      }
-      // Re-check after the await: the loop may have been stopped/restarted
-      // while getPosition was running, which is how the old refresh() leaked
-      // stacked timers on every reconnect (#2).
-      if (epoch !== this._pollEpoch) return;
-      this._timerId = setTimeout(loop, this._pollingInterval);
-    };
-
-    loop();
-  }
-
-  _stopPolling() {
-    // Bumping the epoch invalidates any loop iteration still in flight.
-    this._pollEpoch++;
-    if (this._timerId) {
-      clearTimeout(this._timerId);
-      this._timerId = null;
-    }
-  }
-
-  async onGotoPosition({ extend, turn }) {
-    this.log('Flow: goto_position', extend, turn);
-
-    if (extend < 0 || extend > 100) {
-      this.log('Invalid extend position', extend);
-      return;
-    }
-    if (turn < -100 || turn > 100) {
-      this.log('Invalid turn position', turn);
-      return;
-    }
-
-    this.extendPosition = Buffer.from([0x00, extend]);
-
-    if (turn < 0) {
-      this.turnPosition = Buffer.from([0xff, 255 + turn]);
-    } else {
-      this.turnPosition = Buffer.from([0x00, turn]);
-    }
-
-    await this.setPosition();
-  }
-
-  async onGotoPreset(presetIndex) {
-    const index = Number(presetIndex);
-    this.log('Flow: goto_preset', index);
-
-    if (Number.isNaN(index) || index < 0 || index >= this.presets.length) {
-      this.log('Invalid preset index in flow', presetIndex);
-      return;
-    }
-
-    await this.gotoPreset(index);
-
-    // Keep the picker on its neutral entry (see onCapabilityPreset).
-    await this.setCapabilityValue('preset', 'none').catch(err => this.error('Failed to reset preset picker', err));
-  }
-
-  async onSettings({ oldSettings, newSettings, changedKeys }) {
-    if (changedKeys.includes('polling_interval')) {
-      this._pollingInterval = newSettings.polling_interval * 1000;
-      this.log(`Polling interval changed to ${this._pollingInterval / 1000}s`);
-    }
-
-    if (changedKeys.includes('polling') || changedKeys.includes('polling_interval')) {
-      if (newSettings.polling === true) {
-        this.log('Polling enabled');
-        this._startPolling();
-      } else {
-        this.log('Polling disabled');
-        this._stopPolling();
-      }
-    }
-  }
-
-  /**
-   * onAdded is called when the user adds the device, called just after pairing.
-   */
-  async onAdded() {
-    this.log('MotionMountDevice has been added');
-  }
-
-  /**
-   * onRenamed is called when the user updates the device's name.
-   * This method can be used this to synchronise the name to the device.
-   * @param {string} name The new name
-   */
-  async onRenamed(name) {
-    this.log(`MotionMountDevice was renamed to ${name}`);
-  }
-
-  /**
-   * onDeleted is called when the user deleted the device.
-   */
   async onDeleted() {
-    // Stop every timer so nothing fires against a device that no longer exists
-    // (a stray reconnect() calling setUnavailable() crashed the app).
-    this._destroyed = true;
-    this._stopPolling();
-    if (this._setPositionTimer) {
-      clearTimeout(this._setPositionTimer);
-      this._setPositionTimer = null;
-    }
-    if (this._breakerTimer) {
-      clearTimeout(this._breakerTimer);
-      this._breakerTimer = null;
-    }
-    if (this._reconnectTimer) {
-      clearTimeout(this._reconnectTimer);
-      this._reconnectTimer = null;
-    }
     this.log('MotionMountDevice has been deleted');
   }
 

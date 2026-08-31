@@ -21,22 +21,6 @@ class MotionMountDriver extends Driver {
   async onInit() {
     this.log('MotionMountDriver has been initialized');
 
-    const gotoAction = this.homey.flow.getActionCard('goto_position');
-
-    gotoAction.registerRunListener(async (args, state) => {
-      const { device } = args;
-      const { extend } = args;
-      const { turn } = args;
-
-      if (!device || typeof device.onGotoPosition !== 'function') {
-        this.log('goto_position: device missing or onGotoPosition not implemented');
-        return false;
-      }
-
-      await device.onGotoPosition({ extend, turn });
-      return true;
-    });
-
     const gotoPresetAction = this.homey.flow.getActionCard('goto_preset');
 
     // Autocomplete for preset names to be selected in flow

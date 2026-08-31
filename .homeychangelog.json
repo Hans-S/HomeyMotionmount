@@ -44,5 +44,9 @@
   "0.1.9": {
     "en": "Preset flow cards now target the correct preset (searching while selecting one could pick the wrong preset). Bluetooth stability: the app reuses a single connection instead of discarding and re-opening it (which could orphan the link), and now backs off correctly when the mount accepts a connection but stops responding.",
     "nl": "Preset-flowkaarten kiezen nu de juiste preset (zoeken tijdens het selecteren kon de verkeerde preset kiezen). Bluetooth-stabiliteit: de app hergebruikt één verbinding in plaats van deze weg te gooien en opnieuw te openen (wat de verbinding kon laten hangen), en schakelt nu correct terug wanneer de mount een verbinding accepteert maar niet meer reageert."
+  },
+  "0.2.0": {
+    "en": "Major simplification for stability. The app now only moves the mount to your saved presets, from the preset tile or a flow. Manual extend/turn sliders, the position tiles and background polling are removed — the mount is only contacted when you trigger a preset. Added a 'Reconnect' button that re-loads the presets if the mount couldn't be reached at setup.",
+    "nl": "Grote vereenvoudiging voor stabiliteit. De app zet de mount nu alleen naar je opgeslagen presets, via de preset-tegel of een flow. De handmatige uitschuif-/draaischuiven, de positietegels en de achtergrond-polling zijn verwijderd — de mount wordt alleen benaderd wanneer je een preset activeert. Een nieuwe 'Opnieuw verbinden'-knop laadt de presets opnieuw als de mount bij het instellen niet bereikbaar was."
   }
 }
