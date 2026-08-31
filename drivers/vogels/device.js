@@ -19,34 +19,10 @@ class MotionMountDevice extends Device {
     // Serializes BLE access so two operations never overlap on the mount.
     this._chain = Promise.resolve();
 
-    await this._syncCapabilities();
-
     this.registerCapabilityListener('preset', value => this.onPreset(value));
     this.registerCapabilityListener('retry_setup', () => this.setup());
 
-    // Clear any stale "unavailable" state left by older versions of the app.
-    this.setAvailable().catch(() => {});
-
     this.setup();
-  }
-
-  // Reconcile a device upgraded from an older version with the current manifest:
-  // drop the removed extend/turn/position capabilities and add the reconnect
-  // button. A device paired on this version already matches, so this is a no-op.
-  async _syncCapabilities() {
-    const wanted = ['preset', 'retry_setup'];
-    for (const capability of this.getCapabilities()) {
-      if (!wanted.includes(capability)) {
-        this.log('Removing stale capability', capability);
-        await this.removeCapability(capability).catch(err => this.error('removeCapability', capability, err));
-      }
-    }
-    for (const capability of wanted) {
-      if (!this.hasCapability(capability)) {
-        this.log('Adding capability', capability);
-        await this.addCapability(capability).catch(err => this.error('addCapability', capability, err));
-      }
-    }
   }
 
   // Connect once, read the presets, and fill the preset picker. Runs at startup

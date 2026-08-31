@@ -56,5 +56,9 @@
   "0.2.2": {
     "en": "Upgrading from an older version now cleans up automatically — the removed position tiles are dropped and the Reconnect button added without needing to remove and re-add the device.",
     "nl": "Bijwerken vanaf een oudere versie wordt nu automatisch opgeschoond — de verwijderde positietegels verdwijnen en de Opnieuw verbinden-knop wordt toegevoegd zonder het apparaat te hoeven verwijderen en opnieuw toe te voegen."
+  },
+  "0.2.3": {
+    "en": "If you are upgrading from an older version, please remove the MotionMount device and add it again — its controls changed and re-adding gives you the clean, presets-only device.",
+    "nl": "Als je bijwerkt vanaf een oudere versie: verwijder het MotionMount-apparaat en voeg het opnieuw toe — de bediening is gewijzigd en opnieuw toevoegen geeft je het opgeschoonde apparaat met alleen presets."
   }
 }
