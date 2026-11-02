@@ -2,26 +2,23 @@
 
 const { Device } = require('homey');
 
-// Supported MotionMount models. They share the same scheme (extend at slot 00,
-// turn at slot 01, presets at slots 0x0a..0x16) but use different UUIDs. The
-// mount is moved by writing the position straight to the extend/turn
-// characteristics — no separate "move" characteristic is needed. Because a
-// preset's bytes are read from the device and written straight back to it, the
-// per-model byte order (7355 big-endian, 5675 little-endian) never matters here.
+// Supported MotionMount models. They share the same scheme (presets at slots
+// 0x0a..0x16, move at slot 21) but use different UUIDs. A preset slot holds
+// [0x01, extend(2), turn(2), name]; the mount is moved by writing those 4 bytes
+// unchanged to the move characteristic, as the official app does (verified on a
+// 7355 with a PacketLogger trace; assumed, not yet verified, on the 5675).
 const PROFILES = [
   {
     model: 'NEXT (7355/7356)',
     service: '3e6fe65ded7811e4895e00026fd5c52c',
     prefix: 'c005fa',
-    extend: 'c005fa0006514800b000000000000000',
-    turn: 'c005fa0106514800b000000000000000',
+    move: 'c005fa2106514800b000000000000000',
   },
   {
     model: 'ELITE (5675)',
     service: '94ff08d87129444680574a1ab3b2ebc1',
     prefix: '94fffa',
-    extend: '94fffa007129444680574a1ab3b2ebc1',
-    turn: '94fffa017129444680574a1ab3b2ebc1',
+    move: '94fffa217129444680574a1ab3b2ebc1',
   },
 ];
 
@@ -107,14 +104,11 @@ class MotionMountDevice extends Device {
     this.log('Going to preset', index, preset.name);
     await this._exclusive(() => this._withConnection(async peripheral => {
       const { profile, characteristics } = await this._resolve(peripheral);
-      const extend = characteristics.find(c => c.uuid === profile.extend);
-      const turn = characteristics.find(c => c.uuid === profile.turn);
-      if (!extend || !turn) {
-        throw new Error('extend/turn characteristic not found');
+      const move = characteristics.find(c => c.uuid === profile.move);
+      if (!move) {
+        throw new Error(`move characteristic not found on ${profile.model}`);
       }
-      // moveBuffer = [extend (2 bytes), turn (2 bytes)]; write each axis directly.
-      await this._withTimeout(extend.write(preset.moveBuffer.slice(0, 2)), BLE_TIMEOUT_MS, 'extend write');
-      await this._withTimeout(turn.write(preset.moveBuffer.slice(2, 4)), BLE_TIMEOUT_MS, 'turn write');
+      await this._withTimeout(move.write(preset.moveBuffer), BLE_TIMEOUT_MS, 'preset write');
     }));
   }
 

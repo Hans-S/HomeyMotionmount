@@ -68,5 +68,9 @@
   "0.3.0": {
     "en": "Added support for the ELITE (5675) MotionMount alongside the NEXT (7355/7356). The mount now moves by setting the extend and turn positions directly.",
     "nl": "Ondersteuning toegevoegd voor de ELITE (5675) MotionMount naast de NEXT (7355/7356). De mount wordt nu bewogen door de uitschuif- en draaipositie rechtstreeks in te stellen."
+  },
+  "0.3.1": {
+    "en": "Fixed presets turning the mount to the wrong angle. The mount is moved the same way as the official app again (one combined move command), on both the NEXT and the ELITE.",
+    "nl": "Opgelost dat presets de mount naar de verkeerde hoek draaiden. De mount wordt weer op dezelfde manier bewogen als in de officiële app (één gecombineerde bewegingsopdracht), op zowel de NEXT als de ELITE."
   }
 }
