@@ -2,8 +2,33 @@
 
 const { Device } = require('homey');
 
-const SERVICE_UUID = '3e6fe65ded7811e4895e00026fd5c52c';
-const MOVE_CHARACTERISTIC_UUID = 'c005fa2106514800b000000000000000';
+// Supported MotionMount models. They share the same scheme (extend at slot 00,
+// turn at slot 01, presets at slots 0x0a..0x16) but use different UUIDs. The
+// mount is moved by writing the position straight to the extend/turn
+// characteristics — no separate "move" characteristic is needed. Because a
+// preset's bytes are read from the device and written straight back to it, the
+// per-model byte order (7355 big-endian, 5675 little-endian) never matters here.
+const PROFILES = [
+  {
+    model: 'NEXT (7355/7356)',
+    service: '3e6fe65ded7811e4895e00026fd5c52c',
+    prefix: 'c005fa',
+    extend: 'c005fa0006514800b000000000000000',
+    turn: 'c005fa0106514800b000000000000000',
+  },
+  {
+    model: 'ELITE (5675)',
+    service: '94ff08d87129444680574a1ab3b2ebc1',
+    prefix: '94fffa',
+    extend: '94fffa007129444680574a1ab3b2ebc1',
+    turn: '94fffa017129444680574a1ab3b2ebc1',
+  },
+];
+
+// Preset characteristic slot range (byte at UUID offset 6-7). 0x0a..0x16 covers
+// both models; each real preset's value starts with 0x01.
+const PRESET_SLOT_MIN = 0x0a;
+const PRESET_SLOT_MAX = 0x16;
 
 // One timeout per connect attempt: increasing, and the number of entries is the
 // attempt limit. A failed connect walks down the list, then gives up.
@@ -81,8 +106,15 @@ class MotionMountDevice extends Device {
     }
     this.log('Going to preset', index, preset.name);
     await this._exclusive(() => this._withConnection(async peripheral => {
-      const move = await this._getCharacteristic(peripheral, MOVE_CHARACTERISTIC_UUID);
-      await this._withTimeout(move.write(preset.moveBuffer), BLE_TIMEOUT_MS, 'preset write');
+      const { profile, characteristics } = await this._resolve(peripheral);
+      const extend = characteristics.find(c => c.uuid === profile.extend);
+      const turn = characteristics.find(c => c.uuid === profile.turn);
+      if (!extend || !turn) {
+        throw new Error('extend/turn characteristic not found');
+      }
+      // moveBuffer = [extend (2 bytes), turn (2 bytes)]; write each axis directly.
+      await this._withTimeout(extend.write(preset.moveBuffer.slice(0, 2)), BLE_TIMEOUT_MS, 'extend write');
+      await this._withTimeout(turn.write(preset.moveBuffer.slice(2, 4)), BLE_TIMEOUT_MS, 'turn write');
     }));
   }
 
@@ -148,29 +180,37 @@ class MotionMountDevice extends Device {
     }
   }
 
-  async _discover(peripheral) {
-    const service = await this._withTimeout(peripheral.getService(SERVICE_UUID), BLE_TIMEOUT_MS, 'getService');
-    return this._withTimeout(service.discoverCharacteristics(), BLE_TIMEOUT_MS, 'discoverCharacteristics');
-  }
-
-  async _getCharacteristic(peripheral, uuid) {
-    const characteristic = (await this._discover(peripheral)).find(c => c.uuid === uuid);
-    if (!characteristic) {
-      throw new Error(`characteristic ${uuid} not found`);
+  // Detects which model this mount is and returns its profile plus the
+  // discovered characteristics, by trying each known profile's service.
+  async _resolve(peripheral) {
+    for (const profile of PROFILES) {
+      let service;
+      try {
+        service = await this._withTimeout(peripheral.getService(profile.service), BLE_TIMEOUT_MS, 'getService');
+      } catch (e) {
+        continue; // not this model; try the next profile
+      }
+      if (!service) {
+        continue;
+      }
+      const characteristics = await this._withTimeout(service.discoverCharacteristics(), BLE_TIMEOUT_MS, 'discoverCharacteristics');
+      return { profile, characteristics };
     }
-    return characteristic;
+    throw new Error('no known MotionMount service found on this device');
   }
 
-  // Reads the preset slots (0x0a..0x13). Each valid slot starts with 0x01, then
-  // a 4-byte move buffer, then a null-terminated name.
+  // Reads the preset slots. Each valid slot starts with 0x01, then a 4-byte move
+  // buffer ([extend, turn]), then a null-terminated name.
   async _readPresets(peripheral) {
+    const { profile, characteristics } = await this._resolve(peripheral);
+    this.log('Detected model', profile.model);
     const presets = [];
-    for (const characteristic of await this._discover(peripheral)) {
-      if (!characteristic.uuid.startsWith('c005fa')) {
+    for (const characteristic of characteristics) {
+      if (!characteristic.uuid.startsWith(profile.prefix)) {
         continue;
       }
       const slot = parseInt(characteristic.uuid.substring(6, 8), 16);
-      if (slot < 0x0a || slot > 0x13) {
+      if (slot < PRESET_SLOT_MIN || slot > PRESET_SLOT_MAX) {
         continue;
       }
 

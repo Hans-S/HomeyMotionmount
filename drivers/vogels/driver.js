@@ -7,7 +7,8 @@ const { Driver } = require('homey');
 // old exact-localName match. Add other models (e.g. the 7356) here once their
 // advertised service UUID is confirmed.
 const KNOWN_SERVICE_UUIDS = [
-  '3e6fe65ded7811e4895e00026fd5c52c', // MotionMount 7355
+  '3e6fe65ded7811e4895e00026fd5c52c', // MotionMount NEXT (7355/7356)
+  '94ff08d87129444680574a1ab3b2ebc1', // MotionMount ELITE (5675)
 ];
 
 // Normalize a BLE UUID for comparison (strip dashes, lowercase).
