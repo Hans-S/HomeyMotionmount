@@ -72,5 +72,9 @@
   "0.3.1": {
     "en": "Fixed presets turning the mount to the wrong angle. The mount is moved the same way as the official app again (one combined move command), on both the NEXT and the ELITE.",
     "nl": "Opgelost dat presets de mount naar de verkeerde hoek draaiden. De mount wordt weer op dezelfde manier bewogen als in de officiële app (één gecombineerde bewegingsopdracht), op zowel de NEXT als de ELITE."
+  },
+  "0.3.2": {
+    "en": "Test version for ELITE (5675) support: when no presets are found, the app logs the mount's Bluetooth layout. If your presets don't show up, please send a diagnostic report.",
+    "nl": "Testversie voor ELITE (5675)-ondersteuning: als er geen presets worden gevonden, logt de app de Bluetooth-indeling van de mount. Verschijnen je presets niet, stuur dan een diagnoserapport."
   }
 }

@@ -69,7 +69,15 @@ class MotionMountDevice extends Device {
   async setup() {
     try {
       await this._exclusive(() => this._withConnection(async peripheral => {
-        this.presets = await this._readPresets(peripheral);
+        let presets = [];
+        try {
+          presets = await this._readPresets(peripheral);
+        } finally {
+          if (presets.length === 0) {
+            await this._logGatt(peripheral).catch(err => this.log('GATT dump failed:', err.message));
+          }
+        }
+        this.presets = presets;
       }));
       await this._updatePresetOptions();
       await this.unsetWarning().catch(() => {});
@@ -233,6 +241,55 @@ class MotionMountDevice extends Device {
       });
     }
     return presets;
+  }
+
+  // TEMPORARY (ELITE investigation): when no presets are found, log every
+  // service, characteristic and descriptor with its properties and raw value,
+  // so a diagnostic report shows where the mount keeps its presets and move.
+  async _logGatt(peripheral) {
+    const services = await this._withTimeout(
+      peripheral.discoverAllServicesAndCharacteristics(), BLE_TIMEOUT_MS, 'discoverAll',
+    );
+    for (const service of services) {
+      this.log('GATT service', service.uuid);
+      for (const characteristic of service.characteristics || []) {
+        if (!peripheral.isConnected) {
+          this.log('GATT dump stopped: disconnected');
+          return;
+        }
+        const value = characteristic.properties.includes('read') ? await this._readForLog(characteristic) : '';
+        this.log('GATT   ', characteristic.uuid, `[${characteristic.properties.join(',')}]`, value);
+
+        let descriptors = [];
+        try {
+          descriptors = await this._withTimeout(characteristic.discoverDescriptors(), BLE_TIMEOUT_MS, 'discoverDescriptors');
+        } catch (e) {
+          this.log('GATT      descriptors failed:', e.message);
+        }
+        for (const descriptor of descriptors) {
+          if (!peripheral.isConnected) {
+            this.log('GATT dump stopped: disconnected');
+            return;
+          }
+          this.log('GATT      descriptor', descriptor.uuid, await this._readForLog(descriptor));
+        }
+      }
+    }
+  }
+
+  // TEMPORARY: reads a characteristic or descriptor for the GATT dump. Returns
+  // hex, plus the text when every byte is printable (descriptors may hold a label).
+  async _readForLog(attribute) {
+    try {
+      const buf = await this._withTimeout(attribute.read(), BLE_TIMEOUT_MS, 'read');
+      if (!buf || buf.length === 0) {
+        return '(empty)';
+      }
+      const text = buf.toString('latin1');
+      return /^[\x20-\x7e]+$/.test(text) ? `${buf.toString('hex')} "${text}"` : buf.toString('hex');
+    } catch (e) {
+      return `read failed: ${e.message}`;
+    }
   }
 
   async _updatePresetOptions() {
